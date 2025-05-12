@@ -1,0 +1,37 @@
+# Development dockerfile for bun + vite + react + tailwind
+FROM oven/bun:1
+
+WORKDIR /app
+
+# Copy package.json and install dependencies
+COPY package.json .
+COPY bun.lock ./
+
+# Increase memory limit to support Three.js development
+ENV NODE_OPTIONS="--max-old-space-size=4096"
+RUN bun install
+
+# Install system dependencies (for WebGL support)
+RUN apt-get update && apt-get install -y \
+    libgl1-mesa-dev \
+    libxi-dev \
+    --no-install-recommends \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the rest of the application
+COPY . .
+
+# Expose the ports the app will run on
+EXPOSE 3000
+EXPOSE 5173
+
+# Set environment variables
+ENV VITE_HOST=0.0.0.0
+ENV CHOKIDAR_USEPOLLING=true
+# Set environment variables for WebGL support
+ENV DISABLE_ESLINT_PLUGIN=true
+ENV REACT_APP_GL_RENDERER=webgl
+
+# Command to run the development server with increased memory limit
+CMD ["bun", "run", "dev", "--host", "0.0.0.0"]
