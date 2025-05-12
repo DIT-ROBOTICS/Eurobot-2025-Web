@@ -1,16 +1,17 @@
 services:
-  app:
+  eurobot-2025-web:
     build:
       context: .
       dockerfile: Dockerfile
     image: scx/eurobot-2025-web:latest
+    container_name: eurobot-2025-web
     ports:
       - "3000:80"
     restart: unless-stopped
     environment:
       - NODE_ENV=production
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      test: ["CMD", "curl", "-f", "http://localhost:80"]
       interval: 30s
       timeout: 10s
       retries: 3
