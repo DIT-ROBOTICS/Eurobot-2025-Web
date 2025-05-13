@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile.dev
     image: scx/eurobot-2025-web:dev
     ports:
-      - "3000:3000"
+      # - "3000:3000"
       - "5173:5173" # Vite dev server
     restart: unless-stopped
     environment:
