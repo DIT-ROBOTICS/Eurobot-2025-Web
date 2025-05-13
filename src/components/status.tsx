@@ -3,14 +3,19 @@ import Status3DModel from "./Status3DModel";
 
 export default function RobotDashboard() {
   const [batteryVoltage, setBatteryVoltage] = useState(19.7);
+  const [filteredVoltage, setFilteredVoltage] = useState(19.7); // Filtered voltage value
   const [isConnected, setIsConnected] = useState(true);
   const [debugStatus, setDebugStatus] = useState("Debug Panel");
   const [storageStatus, setStorageStatus] = useState("Full");
   const [simaStatuses, setSimaStatuses] = useState([
-    { id: "01", connected: true },
-    { id: "02", connected: false },
-    { id: "03", connected: true },
-    { id: "04", connected: true },
+    { id: "01", connected: false, url: "http://dit-sima-01.local/" },
+    { id: "02", connected: false, url: "http://dit-sima-02.local/" },
+    { id: "03", connected: false, url: "http://dit-sima-03.local/" },
+    { id: "04", connected: false, url: "http://dit-sima-04.local/" },
+    { id: "05", connected: false, url: "http://dit-sima-05.local/" },
+    { id: "06", connected: false, url: "http://dit-sima-06.local/" },
+    { id: "07", connected: false, url: "http://dit-sima-07.local/" },
+    { id: "08", connected: false, url: "http://dit-sima-08.local/" },
   ]);
   const [isSettingOpen, setIsSettingOpen] = useState(false);
   const [hostnameInput, setHostnameInput] = useState("");
@@ -19,18 +24,302 @@ export default function RobotDashboard() {
     const saved = localStorage.getItem('bms-hostname');
     return saved || "DIT-2025-11";
   });
+  const [rosConnected, setRosConnected] = useState(false);
+  const [isVoltageAvailable, setIsVoltageAvailable] = useState(true);
+  // Long press reload state
+  const [pressTimer, setPressTimer] = useState<any>(null);
+  const [pressProgress, setPressProgress] = useState(0);
+  // Device status (from ROS2 topics)
+  const [deviceStatus, setDeviceStatus] = useState({
+    chassis: false,
+    mission: false,
+    lidar: false,
+    esp32: false,
+    imu: false
+  });
 
-  // Simulate random battery voltage fluctuations
+  // Extract host number from hostname for connection URLs
+  const hostNumber = hostname.split('-')[2] || "";
+  const bmsUrl = `http://dit-2025-${hostNumber}-esp.local/`;
+  const rosUrl = `ws://dit-2025-${hostNumber}.local:9090`;
+
+  // Connect to ROS2 bridge via WebSocket
   useEffect(() => {
-    const interval = setInterval(() => {
-      const fluctuation = (Math.random() - 0.5) * 0.2;
-      setBatteryVoltage(prev => {
-        const newValue = parseFloat((prev + fluctuation).toFixed(1));
-        return newValue > 10 ? newValue : prev;
+    // Skip the ROS connection if running in development environment without proper libraries
+    if (typeof window === 'undefined' || !window.ROSLIB) {
+      console.warn('ROSLIB not available - ROS2 connection disabled');
+      return;
+    }
+
+    let ros: any = null;
+    let batteryTopic: any = null;
+    let deviceTopics: any = {};
+    let reconnectTimer: any = null;
+    let reconnectAttempts = 0;
+    const maxReconnectAttempts = 10; // Maximum reconnection attempts
+    const reconnectInterval = 3000; // 3 seconds between reconnection attempts
+
+    // Function to subscribe to topics
+    const subscribeToTopics = () => {
+      // Subscribe to battery voltage topic
+      batteryTopic = new window.ROSLIB.Topic({
+        ros: ros,
+        name: '/robot_status/battery_voltage',
+        messageType: 'std_msgs/msg/Float32'
       });
+
+      batteryTopic.subscribe((message: any) => {
+        const voltage = parseFloat(message.data);
+        if (!isNaN(voltage)) {
+          setBatteryVoltage(parseFloat(voltage.toFixed(1)));
+        }
+      });
+
+      // Subscribe to device status topics
+      const deviceTopicNames = {
+        chassis: '/robot_status/usb/chassis',
+        mission: '/robot_status/usb/mission',
+        lidar: '/robot_status/usb/lidar',
+        esp32: '/robot_status/usb/esp',
+        imu: '/robot_status/usb/imu'
+      };
+
+      // Create topics and subscribe
+      Object.entries(deviceTopicNames).forEach(([device, topicName]) => {
+        const topic = new window.ROSLIB.Topic({
+          ros: ros,
+          name: topicName,
+          messageType: 'std_msgs/msg/Bool'
+        });
+
+        topic.subscribe((message: any) => {
+          setDeviceStatus(prev => ({
+            ...prev,
+            [device]: message.data
+          }));
+        });
+
+        deviceTopics[device] = topic;
+      });
+    };
+
+    // Function to connect to ROS
+    const connectToROS = () => {
+      // Clear previous connection
+      if (ros) {
+        try {
+          ros.close();
+        } catch (e) {
+          console.error("Error closing previous connection:", e);
+        }
+      }
+
+      // Unsubscribe from all existing subscriptions
+      if (batteryTopic) {
+        try {
+          batteryTopic.unsubscribe();
+        } catch (e) {
+          console.error("Error unsubscribing from battery topic:", e);
+        }
+      }
+      
+      Object.values(deviceTopics).forEach((topic: any) => {
+        if (topic) {
+          try {
+            topic.unsubscribe();
+          } catch (e) {
+            console.error("Error unsubscribing from topic:", e);
+          }
+        }
+      });
+      
+      // Reset device status
+      setDeviceStatus({
+        chassis: false,
+        mission: false,
+        lidar: false,
+        esp32: false,
+        imu: false
+      });
+      
+      try {
+        // Establish new ROS connection
+        ros = new window.ROSLIB.Ros({
+          url: rosUrl
+        });
+
+        // ROS connection event handler
+        ros.on('connection', () => {
+          console.log('Connected to ROS2 bridge');
+          setRosConnected(true);
+          reconnectAttempts = 0; // Reset reconnection counter
+          
+          // Subscribe to topics after successful connection
+          subscribeToTopics();
+        });
+
+        ros.on('error', (error: any) => {
+          console.error('Error connecting to ROS2 bridge:', error);
+          setRosConnected(false);
+          attemptReconnect();
+        });
+
+        ros.on('close', () => {
+          console.log('Connection to ROS2 bridge closed');
+          setRosConnected(false);
+          attemptReconnect();
+        });
+      } catch (error) {
+        console.error('Failed to initialize ROS2 connection:', error);
+        setRosConnected(false);
+        attemptReconnect();
+      }
+    };
+
+    // Function to attempt reconnection
+    const attemptReconnect = () => {
+      // Avoid multiple reconnection requests
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      
+      // If reconnection attempts are less than the maximum, attempt reconnection
+      if (reconnectAttempts < maxReconnectAttempts) {
+        reconnectAttempts++;
+        console.log(`Attempting to reconnect to ROS (attempt ${reconnectAttempts}/${maxReconnectAttempts})...`);
+        
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          connectToROS();
+        }, reconnectInterval);
+      } else {
+        console.warn('Maximum reconnection attempts reached. Please refresh the page.');
+      }
+    };
+
+    // Initial connection
+    connectToROS();
+
+    // Cleanup function
+    return () => {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+      }
+      
+      if (batteryTopic) {
+        try {
+          batteryTopic.unsubscribe();
+        } catch (e) {
+          console.error("Error during cleanup:", e);
+        }
+      }
+      
+      // Unsubscribe from all topics
+      Object.values(deviceTopics).forEach((topic: any) => {
+        if (topic) {
+          try {
+            topic.unsubscribe();
+          } catch (e) {
+            console.error("Error during cleanup:", e);
+          }
+        }
+      });
+      
+      if (ros) {
+        try {
+          ros.close();
+        } catch (e) {
+          console.error("Error during cleanup:", e);
+        }
+      }
+    };
+  }, [rosUrl]);
+
+  // Fallback: handle disconnected state
+  useEffect(() => {
+    // When connection status changes
+    if (rosConnected) {
+      setIsVoltageAvailable(true);
+    } else {
+      // When disconnected, immediately reset all voltage values to zero
+      setIsVoltageAvailable(false);
+      setBatteryVoltage(0);
+      setFilteredVoltage(0); // Immediately reset filtered voltage as well
+    }
+  }, [rosConnected]);
+
+  // Apply low-pass filter to stabilize voltage readings (reduce jitter)
+  useEffect(() => {
+    // Skip filtering if voltage not available or zero
+    if (!isVoltageAvailable || batteryVoltage === 0) {
+      return;
+    }
+    
+    // Low-pass filter - alpha determines how much new readings affect the filtered value
+    // Lower alpha means more smoothing but slower response to real changes
+    const alpha = 0.5;
+    setFilteredVoltage(prev => {
+      return parseFloat((prev * (1 - alpha) + batteryVoltage * alpha).toFixed(1));
+    });
+  }, [batteryVoltage, isVoltageAvailable]);
+
+  // Add monitoring for battery topic specific disconnections
+  useEffect(() => {
+    if (!rosConnected) return;
+    
+    // Create a reference for the last time we received data
+    let lastUpdateTime = Date.now();
+    
+    // This function will be called whenever new battery data is received
+    const updateTimestamp = () => {
+      lastUpdateTime = Date.now();
+      // Make sure voltage is marked as available when we get updates
+      setIsVoltageAvailable(true);
+    };
+    
+    // Set up an observer to watch battery voltage changes
+    const batteryObserver = () => {
+      // Only update timestamp if we have a positive voltage and are connected
+      if (batteryVoltage > 0) {
+        updateTimestamp();
+      }
+    };
+    
+    // Call observer when battery voltage changes
+    batteryObserver();
+    
+    // Check periodically if we're still receiving updates
+    const checkInterval = setInterval(() => {
+      if (!rosConnected) return;
+      
+      const timeSinceLastUpdate = Date.now() - lastUpdateTime;
+      // If no updates for 8 seconds (more tolerant), consider battery data unavailable
+      if (timeSinceLastUpdate > 8000) {
+        setIsVoltageAvailable(false);
+      }
     }, 5000);
-    return () => clearInterval(interval);
-  }, []);
+    
+    return () => clearInterval(checkInterval);
+  }, [batteryVoltage, rosConnected]);
+
+  // Calculate battery percentage based on voltage (15V-21V range)
+  const getBatteryPercentage = () => {
+    if (!isVoltageAvailable) return 0;
+    
+    const percentage = ((filteredVoltage - 15) / (21 - 15)) * 100;
+    return Math.max(0, Math.min(100, Math.round(percentage)));
+  };
+
+  // Get battery color based on percentage
+  const getBatteryColor = () => {
+    if (!isVoltageAvailable) return "#444444";
+    
+    const percentage = getBatteryPercentage();
+    if (percentage > 70) return "#3bab72";
+    if (percentage > 30) return "#e6a919";
+    return "#d64045";
+  };
 
   // Save hostname to localStorage
   const saveHostname = () => {
@@ -43,9 +332,56 @@ export default function RobotDashboard() {
     }
   };
 
-  // Extract host number from hostname
-  const hostNumber = hostname.split('-')[2] || "";
-  const bmsUrl = `http://dit-2025-${hostNumber}-esp.local/`;
+  // Check SIMA connectivity
+  useEffect(() => {
+    // Function to check a single SIMA device connectivity
+    const checkSimaConnectivity = async (simaUrl: string) => {
+      try {
+        // Use fetch with a timeout to check connectivity
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 2000); // 2 second timeout
+        
+        const response = await fetch(simaUrl, { 
+          method: 'HEAD',
+          mode: 'no-cors', // This allows us to ping the URL without CORS issues
+          signal: controller.signal 
+        });
+        
+        clearTimeout(timeoutId);
+        return true; // If we get here, the connection succeeded
+      } catch (error) {
+        return false; // Connection failed
+      }
+    };
+
+    // Check all SIMA devices simultaneously
+    const checkAllSimas = async () => {
+      try {
+        // Create an array of promises for all SIMA checks
+        const checkPromises = simaStatuses.map((sima) => 
+          checkSimaConnectivity(sima.url)
+            .then(isConnected => ({ ...sima, connected: isConnected }))
+        );
+        
+        // Wait for all promises to resolve in parallel
+        const results = await Promise.all(checkPromises);
+        
+        // Update state with all results at once
+        setSimaStatuses(results);
+      } catch (error) {
+        // Silent fail - no logging
+      }
+    };
+
+    // Initial check
+    checkAllSimas();
+    
+    // Set up periodic checks every 3 seconds
+    const intervalId = setInterval(checkAllSimas, 3000);
+    
+    // Clean up on unmount
+    return () => clearInterval(intervalId);
+  }, []);
 
   return (
     <div className="h-full w-full bg-[#0e0e0e] p-6 overflow-y-auto">
@@ -61,10 +397,11 @@ export default function RobotDashboard() {
 
           {/* Checkboxes */}
           <StatusPanel title="Device Status">
-            <CheckboxItem label="CHASSIS" checked={false} />
-            <CheckboxItem label="MISSION" checked={true} />
-            <CheckboxItem label="LIDAR" checked={true} />
-            <CheckboxItem label="ESP32" checked={true} />
+            <CheckboxItem label="CHASSIS" checked={deviceStatus.chassis} />
+            <CheckboxItem label="MISSION" checked={deviceStatus.mission} />
+            <CheckboxItem label="LIDAR" checked={deviceStatus.lidar} />
+            <CheckboxItem label="IMU" checked={deviceStatus.imu} />
+            <CheckboxItem label="ESP32" checked={deviceStatus.esp32} />
           </StatusPanel>
           
           {/* 3D Model */}
@@ -91,8 +428,77 @@ export default function RobotDashboard() {
 
           {/* Battery Status */}
           <StatusPanel title="BAT STATUS">
-            <div className="text-[#ffffff] text-7xl font-bold text-center py-5 min-w-[300px]">
-              {batteryVoltage} V
+            <div className="flex items-center gap-20 min-w-[300px]">
+              <div className="text-[#ffffff] text-7xl font-bold text-left py-5 relative">
+                {isVoltageAvailable ? (
+                  <span className="relative">
+                    {filteredVoltage.toFixed(1)} <span className="text-5xl absolute bottom-2 -right-10">V</span>
+                  </span>
+                ) : (
+                  <span className="relative text-[#888888]">N/A</span>
+                )}
+                <div className="absolute bottom-0 left-0 h-1 bg-gradient-to-r from-[#ff4d4d] to-transparent w-full opacity-70"></div>
+              </div>
+              
+              {/* Battery Icon - New Design */}
+              <div className="relative w-24 h-32">
+                {/* Battery body/outline */}
+                <div className="absolute inset-0 rounded-md border-2 border-[#555] bg-[#111] overflow-hidden flex flex-col">
+                  {/* Battery terminals at top */}
+                  <div className="h-3 w-full bg-[#333] border-b border-[#444] flex justify-center items-center">
+                    <div className="w-6 h-1.5 bg-[#666] rounded-sm"></div>
+                  </div>
+                  
+                  {/* Battery level container */}
+                  <div className="flex-1 relative p-0.5">
+                    {/* Battery level fill */}
+                    <div 
+                      className="absolute bottom-0 left-0 right-0 transition-all duration-1000"
+                      style={{ 
+                        height: `${getBatteryPercentage()}%`,
+                        background: isVoltageAvailable 
+                          ? `linear-gradient(to top, ${getBatteryColor()}, ${getBatteryColor()}88)`
+                          : 'linear-gradient(to top, #333, #444)',
+                        opacity: isVoltageAvailable ? 1 : 0.5
+                      }}
+                    ></div>
+                    
+                    {/* Digital display overlay */}
+                    <div className="absolute inset-0 flex flex-col justify-center items-center">
+                      <div className="text-center">
+                        <div className="font-mono text-lg font-bold text-white mb-1">
+                          {isVoltageAvailable ? `${getBatteryPercentage()}%` : "N/A"}
+                        </div>
+                        {isVoltageAvailable && (
+                          <div className="w-full h-0.5 bg-white opacity-30 mb-2"></div>
+                        )}
+                        <div className="flex justify-center">
+                          {isVoltageAvailable && [...Array(Math.min(5, Math.ceil(getBatteryPercentage() / 20)))].map((_, i) => (
+                            <div key={i} className="w-1 h-3 bg-white mx-0.5 opacity-80"></div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Battery grid pattern */}
+                    <div className="absolute inset-0 grid grid-cols-3 grid-rows-6 gap-[1px] pointer-events-none opacity-10">
+                      {[...Array(18)].map((_, i) => (
+                        <div key={i} className="border border-[#fff]"></div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                
+                {/* Glowing indicator */}
+                <div 
+                  className="absolute top-2 right-2 w-2 h-2 rounded-full transition-colors duration-300"
+                  style={{ 
+                    backgroundColor: getBatteryColor(),
+                    boxShadow: isVoltageAvailable ? `0 0 8px ${getBatteryColor()}` : 'none',
+                    opacity: isVoltageAvailable ? 1 : 0.3
+                  }}
+                ></div>
+              </div>
             </div>
           </StatusPanel>
           
@@ -156,6 +562,98 @@ export default function RobotDashboard() {
           </StatusPanel>
         </div>
       </div>
+
+      {/* Floating Bridge Status Indicator - Now a refresh button */}
+      <div 
+        className="fixed bottom-10 right-10 z-50 flex items-center gap-8 bg-black/70 backdrop-blur-md rounded-2xl px-8 py-5 border-2 border-[#444] shadow-2xl transition-all duration-300 hover:bg-black/80 cursor-pointer select-none"
+        onMouseDown={() => {
+          // Start long-press timer
+          const timer = setInterval(() => {
+            setPressProgress(prev => {
+              const newProgress = prev + (100/30); // Complete in 3 seconds (30×100ms)
+              if (newProgress >= 100) {
+                // Reload the page
+                window.location.reload();
+                clearInterval(timer);
+                return 0;
+              }
+              return newProgress;
+            });
+          }, 100);
+          setPressTimer(timer);
+        }}
+        onMouseUp={() => {
+          // Cancel long-press
+          if (pressTimer) {
+            clearInterval(pressTimer);
+            setPressTimer(null);
+            setPressProgress(0);
+          }
+        }}
+        onMouseLeave={() => {
+          // Also cancel on mouse leave
+          if (pressTimer) {
+            clearInterval(pressTimer);
+            setPressTimer(null);
+            setPressProgress(0);
+          }
+        }}
+        onTouchStart={() => {
+          // Start long-press timer (touch screen)
+          const timer = setInterval(() => {
+            setPressProgress(prev => {
+              const newProgress = prev + (100/30); // Complete in 3 seconds
+              if (newProgress >= 100) {
+                // Reload the page
+                window.location.reload();
+                clearInterval(timer);
+                return 0;
+              }
+              return newProgress;
+            });
+          }, 100);
+          setPressTimer(timer);
+        }}
+        onTouchEnd={() => {
+          // Cancel long-press (touch screen)
+          if (pressTimer) {
+            clearInterval(pressTimer);
+            setPressTimer(null);
+            setPressProgress(0);
+          }
+        }}
+      >
+        <div className="relative">
+          <div className={`w-8 h-8 rounded-full ${rosConnected ? "bg-[#d32f2f]" : "bg-[#444]"}`}></div>
+          {rosConnected && (
+            <div className="absolute inset-0 w-8 h-8 rounded-full bg-[#d32f2f] animate-ping opacity-75"></div>
+          )}
+        </div>
+        <div className="flex flex-col">
+          <div className="text-white text-2xl font-mono font-bold leading-tight">
+            ROS Bridge
+          </div>
+          <div className={`text-xl font-mono ${rosConnected ? "text-[#ff4d4d]" : "text-[#999]"}`}>
+            {rosConnected ? "Connected" : "Press to refresh"}
+          </div>
+        </div>
+        
+        {/* Long-press progress indicator */}
+        {pressProgress > 0 && (
+          <div className="absolute bottom-0 left-0 h-1 bg-[#ff4d4d] rounded-b-xl" style={{ width: `${pressProgress}%` }}></div>
+        )}
+      </div>
+
+      <style jsx global>{`
+        ::-webkit-scrollbar {
+          display: none;
+        }
+        
+        * {
+          -ms-overflow-style: none;
+          scrollbar-width: none;
+        }
+      `}</style>
     </div>
   );
 }
