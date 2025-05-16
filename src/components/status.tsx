@@ -3,12 +3,11 @@ import Status3DModel from "./Status3DModel";
 import { useRosConnection } from "../utils/useRosConnection";
 
 export default function RobotDashboard() {
-  const [batteryVoltage, setBatteryVoltage] = useState(19.7);
-  const [filteredVoltage, setFilteredVoltage] = useState(19.7); // Filtered voltage value
-  const [isConnected, setIsConnected] = useState(true);
-  const [debugStatus, setDebugStatus] = useState("Debug Panel");
-  const [storageStatus, setStorageStatus] = useState("Full");
+  const [batteryVoltage, setBatteryVoltage] = useState(20.25);
+  const [filteredVoltage, setFilteredVoltage] = useState(20.25); // Filtered voltage value
   const [plugConnected, setPlugConnected] = useState(false); // Ready signal over plug interface
+  const [lastPlugTrueTime, setLastPlugTrueTime] = useState(0); // Time when the last true plug signal was received
+  const [isHalfScreen, setIsHalfScreen] = useState(false); // New state for half-screen mode
   const [simaStatuses, setSimaStatuses] = useState([
     { id: "01", connected: false, url: "http://dit-sima-01.local/" },
     { id: "02", connected: false, url: "http://dit-sima-02.local/" },
@@ -24,7 +23,7 @@ export default function RobotDashboard() {
   const [hostname, setHostname] = useState(() => {
     // Get saved hostname from localStorage, use default if not found
     const saved = localStorage.getItem('bms-hostname');
-    return saved || "DIT-2025-11";
+    return saved || "DIT-2025-10";
   });
   // Use the shared ROS connection hook
   const { connected: rosConnected, getTopicHandler } = useRosConnection();
@@ -47,6 +46,39 @@ export default function RobotDashboard() {
   // Extract host number from hostname for connection URLs
   const hostNumber = hostname.split('-')[2] || "";
   const bmsUrl = `http://dit-2025-${hostNumber}-esp.local/`;
+
+  // Detect half-screen mode
+  useEffect(() => {
+    try {
+      const savedValue = localStorage.getItem('isHalfScreen');
+      setIsHalfScreen(savedValue === 'true');
+      
+      // Listen for changes to half-screen mode from other components
+      const checkHalfScreen = () => {
+        try {
+          const savedValue = localStorage.getItem('isHalfScreen');
+          setIsHalfScreen(savedValue === 'true');
+        } catch (error) {
+          console.warn('Could not detect half screen mode:', error);
+        }
+      };
+      
+      // Add event listener for storage events
+      window.addEventListener('storage', checkHalfScreen);
+      document.addEventListener('visibilitychange', checkHalfScreen);
+      
+      // Also set up a polling mechanism to check periodically
+      const interval = setInterval(checkHalfScreen, 1000);
+      
+      return () => {
+        window.removeEventListener('storage', checkHalfScreen);
+        document.removeEventListener('visibilitychange', checkHalfScreen);
+        clearInterval(interval);
+      };
+    } catch (error) {
+      console.warn('Could not detect half screen mode:', error);
+    }
+  }, []);
 
   // Subscribe to ROS topics using our shared connection
   useEffect(() => {
@@ -93,7 +125,14 @@ export default function RobotDashboard() {
     const plugTopic = getTopicHandler('/robot/startup/plug', 'std_msgs/msg/Bool');
     if (plugTopic) {
       plugTopic.subscribe((message: any) => {
-        setPlugConnected(message.data);
+        if (message.data) {
+          // If we receive a true signal, update the connected status and record the timestamp
+          setPlugConnected(true);
+          setLastPlugTrueTime(Date.now());
+        } else {
+          // If we receive false, immediately set to false
+          setPlugConnected(false);
+        }
       });
     }
 
@@ -128,6 +167,26 @@ export default function RobotDashboard() {
       }
     };
   }, [rosConnected, getTopicHandler]);
+
+  // Add a timeout effect to reset plugConnected to false if no true signal received for 5 seconds
+  useEffect(() => {
+    // Skip if not currently connected
+    if (!plugConnected) return;
+
+    // Set up interval to check for timeout
+    const intervalId = setInterval(() => {
+      const now = Date.now();
+      const timeSinceLastTrue = now - lastPlugTrueTime;
+      
+      // If it's been more than 5 seconds since the last true signal, set to false
+      if (timeSinceLastTrue > 5000) {
+        setPlugConnected(false);
+      }
+    }, 1000); // Check every second
+    
+    // Clean up interval on unmount or when plugConnected changes
+    return () => clearInterval(intervalId);
+  }, [plugConnected, lastPlugTrueTime]);
 
   // Fallback: handle disconnected state
   useEffect(() => {
@@ -288,91 +347,6 @@ export default function RobotDashboard() {
             <StatusItem color="red" label="LOCALIZATION" />
           </StatusPanel>
 
-          {/* Robot Ready Signal Status */}
-          <StatusPanel title="">
-            <div className="flex items-center space-x-6">
-              <div className="relative w-28 h-28 flex items-center justify-center">
-                {/* Robot container with background */}
-                <div className={`absolute inset-0 rounded-full ${plugConnected ? 'bg-[#121212]' : 'bg-[#181818]'} border-2 ${plugConnected ? 'border-[#4caf50]' : 'border-[#f44336]'} flex items-center justify-center overflow-hidden`}>
-                  
-                  {/* Robot body */}
-                  <div className="relative">
-                    {/* Robot head */}
-                    <div className={`w-14 h-10 rounded-t-lg ${plugConnected ? 'bg-[#2a2a2a]' : 'bg-[#222]'} border-2 border-[#555] relative mb-1 transition-colors duration-300`}>
-                      {/* Robot eyes */}
-                      <div className="absolute top-2 left-2 w-3 h-3 rounded-full bg-[#333] border border-[#444] overflow-hidden">
-                        <div className={`absolute inset-0 rounded-full ${plugConnected ? 'bg-[#4caf50]' : 'bg-[#555]'} transition-colors duration-300`}></div>
-                        {plugConnected && (
-                          <div className="absolute top-0 left-0 w-full h-full bg-white opacity-70 animate-ping"></div>
-                        )}
-                      </div>
-                      <div className="absolute top-2 right-2 w-3 h-3 rounded-full bg-[#333] border border-[#444] overflow-hidden">
-                        <div className={`absolute inset-0 rounded-full ${plugConnected ? 'bg-[#4caf50]' : 'bg-[#555]'} transition-colors duration-300`}></div>
-                        {plugConnected && (
-                          <div className="absolute top-0 left-0 w-full h-full bg-white opacity-70 animate-ping" style={{ animationDelay: '0.5s' }}></div>
-                        )}
-                      </div>
-                      
-                      {/* Robot antenna */}
-                      <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 w-1 h-3 bg-[#666]">
-                        <div className={`absolute -top-1 left-1/2 transform -translate-x-1/2 w-2 h-2 rounded-full ${plugConnected ? 'bg-[#ff5252]' : 'bg-[#666]'} transition-colors duration-300`}>
-                          {plugConnected && (
-                            <div className="absolute inset-0 rounded-full bg-[#ff5252] animate-pulse"></div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                    
-                    {/* Robot body */}
-                    <div className={`w-14 h-12 ${plugConnected ? 'bg-[#2a2a2a]' : 'bg-[#222]'} border-2 border-[#555] rounded-b-lg relative transition-colors duration-300`}>
-                      {/* Display screen */}
-                      <div className="absolute top-1 left-1/2 transform -translate-x-1/2 w-10 h-4 bg-[#111] border border-[#444] rounded-sm overflow-hidden">
-                        {/* Status lights */}
-                        <div className="flex justify-around items-center h-full px-1">
-                          <div className={`w-1.5 h-1.5 rounded-full ${plugConnected ? 'bg-[#4caf50]' : 'bg-[#333]'} transition-colors duration-300`}></div>
-                          <div className={`w-1.5 h-1.5 rounded-full ${plugConnected ? 'bg-[#ffb74d]' : 'bg-[#333]'} transition-colors duration-300 ${plugConnected ? 'animate-pulse' : ''}`}></div>
-                          <div className={`w-1.5 h-1.5 rounded-full ${plugConnected ? 'bg-[#2196f3]' : 'bg-[#333]'} transition-colors duration-300`}></div>
-                        </div>
-                      </div>
-                      
-                      {/* Control buttons */}
-                      <div className="absolute bottom-1 left-0 right-0 flex justify-center space-x-1">
-                        <div className={`w-2 h-2 rounded-full ${plugConnected ? 'bg-[#ff5252]' : 'bg-[#444]'} transition-colors duration-300`}></div>
-                        <div className={`w-2 h-2 rounded-full ${plugConnected ? 'bg-[#ffb74d]' : 'bg-[#444]'} transition-colors duration-300`}></div>
-                      </div>
-                    </div>
-                    
-                    {/* Robot arms - with movement when active */}
-                    <div className={`absolute -left-3 top-10 w-1.5 h-10 bg-[#444] rounded-full transition-all duration-500 origin-top ${plugConnected ? 'transform rotate-12' : ''}`}>
-                      <div className={`absolute bottom-0 w-2.5 h-2.5 rounded-full bg-[#555] transition-all duration-500`}></div>
-                    </div>
-                    <div className={`absolute -right-3 top-10 w-1.5 h-10 bg-[#444] rounded-full transition-all duration-500 origin-top ${plugConnected ? 'transform -rotate-12' : ''}`}>
-                      <div className={`absolute bottom-0 w-2.5 h-2.5 rounded-full bg-[#555] transition-all duration-500`}></div>
-                    </div>
-                  </div>
-                  
-                  {/* Base/ground effect */}
-                  <div className="absolute bottom-0 left-0 right-0 h-3 bg-gradient-to-t from-[#333] to-transparent"></div>
-                </div>
-                
-                {/* Pulse effect behind robot when active */}
-                {plugConnected && (
-                  <div className="absolute -z-10 inset-0 rounded-full bg-[#4caf50] opacity-10 animate-pulse"></div>
-                )}
-              </div>
-              
-              <div className="flex flex-col">
-                <div className="text-2xl font-bold text-white">Startup Signal</div>
-                <div className={`text-xl ${plugConnected ? 'text-[#4caf50]' : 'text-[#f44336]'}`}>
-                  {plugConnected ? 'Ready' : 'Not Ready'}
-                </div>
-                {plugConnected && (
-                  <div className="text-sm text-[#99c09a] mt-1 animate-pulse">Systems online</div>
-                )}
-              </div>
-            </div>
-          </StatusPanel>
-
           {/* Checkboxes */}
           <StatusPanel title="Device Status">
             <CheckboxItem label="CHASSIS" checked={deviceStatus.chassis} />
@@ -387,6 +361,34 @@ export default function RobotDashboard() {
         </div>
 
         <div className="space-y-6">
+
+          {/* Robot Ready Signal Status */}
+          <StatusPanel title="">
+            <div className="flex items-center space-x-6">
+              <div className="relative w-28 h-28 flex items-center justify-center">
+                {/* Banter Loader Animation */}
+                <div className={`banter-loader ${!plugConnected && 'banter-loader--inactive'}`}>
+                  <div className="banter-loader__box"></div>
+                  <div className="banter-loader__box"></div>
+                  <div className="banter-loader__box"></div>
+                  <div className="banter-loader__box"></div>
+                  <div className="banter-loader__box"></div>
+                  <div className="banter-loader__box"></div>
+                  <div className="banter-loader__box"></div>
+                  <div className="banter-loader__box"></div>
+                  <div className="banter-loader__box"></div>
+                </div>
+              </div>
+              
+              <div className="flex flex-col">
+                <div className="text-2xl font-bold text-white">Startup Signal</div>
+                <div className={`text-xl font-mono ${plugConnected ? 'text-[#ff4d4d]' : 'text-[#777]'}`}>
+                  {plugConnected ? 'READY' : 'STANDBY'}
+                </div>
+              </div>
+            </div>
+          </StatusPanel>
+          
           {/* SIMA Status */}
           <StatusPanel title="SIMA Status">
             <div className="grid grid-cols-2 gap-4 min-w-[300px]">
@@ -486,7 +488,7 @@ export default function RobotDashboard() {
               {isSettingOpen && (
                 <div className="bg-[#242424] p-4 rounded-md mb-4 relative">
                   <div className="flex flex-col">
-                    <label className="text-[#e0e0e0] text-xl mb-2">Hostname (e.g. DIT-2025-11)</label>
+                    <label className="text-[#e0e0e0] text-xl mb-2">Hostname (e.g. DIT-2025-10)</label>
                     <input 
                       type="text" 
                       value={hostnameInput} 
@@ -543,7 +545,7 @@ export default function RobotDashboard() {
 
       {/* Floating Bridge Status Indicator - Now a refresh button */}
       <div 
-        className="fixed bottom-10 right-10 z-50 flex items-center gap-8 bg-black/70 backdrop-blur-md rounded-2xl px-8 py-5 border-2 border-[#444] shadow-2xl transition-all duration-300 hover:bg-black/80 cursor-pointer select-none"
+        className={`fixed ${isHalfScreen ? 'bottom-40' : 'bottom-10'} right-10 z-50 flex items-center gap-8 bg-black/70 backdrop-blur-md rounded-2xl px-8 py-5 border-2 border-[#444] shadow-2xl transition-all duration-300 hover:bg-black/80 cursor-pointer select-none`}
         onMouseDown={() => {
           // Start long-press timer
           const timer = setInterval(() => {
@@ -630,6 +632,275 @@ export default function RobotDashboard() {
         * {
           -ms-overflow-style: none;
           scrollbar-width: none;
+        }
+        
+        @keyframes scan {
+          0% { transform: translateY(-100%); }
+          100% { transform: translateY(400%); }
+        }
+        
+        .animate-scan {
+          animation: scan 2s linear infinite;
+        }
+        
+        @keyframes spin-slow {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+        
+        .animate-spin-slow {
+          animation: spin-slow 15s linear infinite;
+        }
+
+        /* Banter Loader Animation */
+        .banter-loader {
+          position: relative;
+          width: 72px;
+          height: 72px;
+          transform: scale(0.7);
+          transition: opacity 0.5s ease;
+        }
+
+        .banter-loader__box {
+          float: left;
+          position: relative;
+          width: 20px;
+          height: 20px;
+          margin-right: 6px;
+        }
+
+        .banter-loader__box:before {
+          content: "";
+          position: absolute;
+          left: 0;
+          top: 0;
+          width: 100%;
+          height: 100%;
+          background: white;
+          transition: opacity 0.5s ease, transform 0.3s ease;
+        }
+
+        .banter-loader--inactive {
+          opacity: 0.4;
+        }
+
+        .banter-loader--inactive .banter-loader__box:before {
+          background: white;
+        }
+
+        .banter-loader__box:nth-child(3n) {
+          margin-right: 0;
+          margin-bottom: 6px;
+        }
+
+        .banter-loader__box:nth-child(1):before, .banter-loader__box:nth-child(4):before {
+          margin-left: 26px;
+        }
+
+        .banter-loader__box:nth-child(3):before {
+          margin-top: 52px;
+        }
+
+        .banter-loader__box:last-child {
+          margin-bottom: 0;
+        }
+
+        @keyframes moveBox-1 {
+          9.0909090909% { transform: translate(-26px, 0); }
+          18.1818181818% { transform: translate(0px, 0); }
+          27.2727272727% { transform: translate(0px, 0); }
+          36.3636363636% { transform: translate(26px, 0); }
+          45.4545454545% { transform: translate(26px, 26px); }
+          54.5454545455% { transform: translate(26px, 26px); }
+          63.6363636364% { transform: translate(26px, 26px); }
+          72.7272727273% { transform: translate(26px, 0px); }
+          81.8181818182% { transform: translate(0px, 0px); }
+          90.9090909091% { transform: translate(-26px, 0px); }
+          100% { transform: translate(0px, 0px); }
+        }
+
+        .banter-loader__box:nth-child(1) {
+          animation: moveBox-1 4s infinite;
+        }
+        
+        .banter-loader--inactive .banter-loader__box:nth-child(1) {
+          animation: none;
+        }
+
+        @keyframes moveBox-2 {
+          9.0909090909% { transform: translate(0, 0); }
+          18.1818181818% { transform: translate(26px, 0); }
+          27.2727272727% { transform: translate(0px, 0); }
+          36.3636363636% { transform: translate(26px, 0); }
+          45.4545454545% { transform: translate(26px, 26px); }
+          54.5454545455% { transform: translate(26px, 26px); }
+          63.6363636364% { transform: translate(26px, 26px); }
+          72.7272727273% { transform: translate(26px, 26px); }
+          81.8181818182% { transform: translate(0px, 26px); }
+          90.9090909091% { transform: translate(0px, 26px); }
+          100% { transform: translate(0px, 0px); }
+        }
+
+        .banter-loader__box:nth-child(2) {
+          animation: moveBox-2 4s infinite;
+        }
+        
+        .banter-loader--inactive .banter-loader__box:nth-child(2) {
+          animation: none;
+        }
+
+        @keyframes moveBox-3 {
+          9.0909090909% { transform: translate(-26px, 0); }
+          18.1818181818% { transform: translate(-26px, 0); }
+          27.2727272727% { transform: translate(0px, 0); }
+          36.3636363636% { transform: translate(-26px, 0); }
+          45.4545454545% { transform: translate(-26px, 0); }
+          54.5454545455% { transform: translate(-26px, 0); }
+          63.6363636364% { transform: translate(-26px, 0); }
+          72.7272727273% { transform: translate(-26px, 0); }
+          81.8181818182% { transform: translate(-26px, -26px); }
+          90.9090909091% { transform: translate(0px, -26px); }
+          100% { transform: translate(0px, 0px); }
+        }
+
+        .banter-loader__box:nth-child(3) {
+          animation: moveBox-3 4s infinite;
+        }
+        
+        .banter-loader--inactive .banter-loader__box:nth-child(3) {
+          animation: none;
+        }
+
+        @keyframes moveBox-4 {
+          9.0909090909% { transform: translate(-26px, 0); }
+          18.1818181818% { transform: translate(-26px, 0); }
+          27.2727272727% { transform: translate(-26px, -26px); }
+          36.3636363636% { transform: translate(0px, -26px); }
+          45.4545454545% { transform: translate(0px, 0px); }
+          54.5454545455% { transform: translate(0px, -26px); }
+          63.6363636364% { transform: translate(0px, -26px); }
+          72.7272727273% { transform: translate(0px, -26px); }
+          81.8181818182% { transform: translate(-26px, -26px); }
+          90.9090909091% { transform: translate(-26px, 0px); }
+          100% { transform: translate(0px, 0px); }
+        }
+
+        .banter-loader__box:nth-child(4) {
+          animation: moveBox-4 4s infinite;
+        }
+        
+        .banter-loader--inactive .banter-loader__box:nth-child(4) {
+          animation: none;
+        }
+
+        @keyframes moveBox-5 {
+          9.0909090909% { transform: translate(0, 0); }
+          18.1818181818% { transform: translate(0, 0); }
+          27.2727272727% { transform: translate(0, 0); }
+          36.3636363636% { transform: translate(26px, 0); }
+          45.4545454545% { transform: translate(26px, 0); }
+          54.5454545455% { transform: translate(26px, 0); }
+          63.6363636364% { transform: translate(26px, 0); }
+          72.7272727273% { transform: translate(26px, 0); }
+          81.8181818182% { transform: translate(26px, -26px); }
+          90.9090909091% { transform: translate(0px, -26px); }
+          100% { transform: translate(0px, 0px); }
+        }
+
+        .banter-loader__box:nth-child(5) {
+          animation: moveBox-5 4s infinite;
+        }
+        
+        .banter-loader--inactive .banter-loader__box:nth-child(5) {
+          animation: none;
+        }
+
+        @keyframes moveBox-6 {
+          9.0909090909% { transform: translate(0, 0); }
+          18.1818181818% { transform: translate(-26px, 0); }
+          27.2727272727% { transform: translate(-26px, 0); }
+          36.3636363636% { transform: translate(0px, 0); }
+          45.4545454545% { transform: translate(0px, 0); }
+          54.5454545455% { transform: translate(0px, 0); }
+          63.6363636364% { transform: translate(0px, 0); }
+          72.7272727273% { transform: translate(0px, 26px); }
+          81.8181818182% { transform: translate(-26px, 26px); }
+          90.9090909091% { transform: translate(-26px, 0px); }
+          100% { transform: translate(0px, 0px); }
+        }
+
+        .banter-loader__box:nth-child(6) {
+          animation: moveBox-6 4s infinite;
+        }
+        
+        .banter-loader--inactive .banter-loader__box:nth-child(6) {
+          animation: none;
+        }
+
+        @keyframes moveBox-7 {
+          9.0909090909% { transform: translate(26px, 0); }
+          18.1818181818% { transform: translate(26px, 0); }
+          27.2727272727% { transform: translate(26px, 0); }
+          36.3636363636% { transform: translate(0px, 0); }
+          45.4545454545% { transform: translate(0px, -26px); }
+          54.5454545455% { transform: translate(26px, -26px); }
+          63.6363636364% { transform: translate(0px, -26px); }
+          72.7272727273% { transform: translate(0px, -26px); }
+          81.8181818182% { transform: translate(0px, 0px); }
+          90.9090909091% { transform: translate(26px, 0px); }
+          100% { transform: translate(0px, 0px); }
+        }
+
+        .banter-loader__box:nth-child(7) {
+          animation: moveBox-7 4s infinite;
+        }
+        
+        .banter-loader--inactive .banter-loader__box:nth-child(7) {
+          animation: none;
+        }
+
+        @keyframes moveBox-8 {
+          9.0909090909% { transform: translate(0, 0); }
+          18.1818181818% { transform: translate(-26px, 0); }
+          27.2727272727% { transform: translate(-26px, -26px); }
+          36.3636363636% { transform: translate(0px, -26px); }
+          45.4545454545% { transform: translate(0px, -26px); }
+          54.5454545455% { transform: translate(0px, -26px); }
+          63.6363636364% { transform: translate(0px, -26px); }
+          72.7272727273% { transform: translate(0px, -26px); }
+          81.8181818182% { transform: translate(26px, -26px); }
+          90.9090909091% { transform: translate(26px, 0px); }
+          100% { transform: translate(0px, 0px); }
+        }
+
+        .banter-loader__box:nth-child(8) {
+          animation: moveBox-8 4s infinite;
+        }
+        
+        .banter-loader--inactive .banter-loader__box:nth-child(8) {
+          animation: none;
+        }
+
+        @keyframes moveBox-9 {
+          9.0909090909% { transform: translate(-26px, 0); }
+          18.1818181818% { transform: translate(-26px, 0); }
+          27.2727272727% { transform: translate(0px, 0); }
+          36.3636363636% { transform: translate(-26px, 0); }
+          45.4545454545% { transform: translate(0px, 0); }
+          54.5454545455% { transform: translate(0px, 0); }
+          63.6363636364% { transform: translate(-26px, 0); }
+          72.7272727273% { transform: translate(-26px, 0); }
+          81.8181818182% { transform: translate(-52px, 0); }
+          90.9090909091% { transform: translate(-26px, 0); }
+          100% { transform: translate(0px, 0); }
+        }
+
+        .banter-loader__box:nth-child(9) {
+          animation: moveBox-9 4s infinite;
+        }
+        
+        .banter-loader--inactive .banter-loader__box:nth-child(9) {
+          animation: none;
         }
       `}</style>
     </div>
