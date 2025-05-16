@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import Status3DModel from "./Status3DModel";
+import { useRosConnection } from "../utils/useRosConnection";
 
 export default function RobotDashboard() {
   const [batteryVoltage, setBatteryVoltage] = useState(19.7);
@@ -7,6 +8,7 @@ export default function RobotDashboard() {
   const [isConnected, setIsConnected] = useState(true);
   const [debugStatus, setDebugStatus] = useState("Debug Panel");
   const [storageStatus, setStorageStatus] = useState("Full");
+  const [plugConnected, setPlugConnected] = useState(false); // Ready signal over plug interface
   const [simaStatuses, setSimaStatuses] = useState([
     { id: "01", connected: false, url: "http://dit-sima-01.local/" },
     { id: "02", connected: false, url: "http://dit-sima-02.local/" },
@@ -24,7 +26,8 @@ export default function RobotDashboard() {
     const saved = localStorage.getItem('bms-hostname');
     return saved || "DIT-2025-11";
   });
-  const [rosConnected, setRosConnected] = useState(false);
+  // Use the shared ROS connection hook
+  const { connected: rosConnected, getTopicHandler } = useRosConnection();
   const [isVoltageAvailable, setIsVoltageAvailable] = useState(true);
   // Long press reload state
   const [pressTimer, setPressTimer] = useState<any>(null);
@@ -38,83 +41,64 @@ export default function RobotDashboard() {
     imu: false
   });
 
+  // Define the type for device status
+  type DeviceStatusType = typeof deviceStatus;
+
   // Extract host number from hostname for connection URLs
   const hostNumber = hostname.split('-')[2] || "";
   const bmsUrl = `http://dit-2025-${hostNumber}-esp.local/`;
-  const rosUrl = `ws://dit-2025-${hostNumber}.local:9090`;
 
-  // Connect to ROS2 bridge via WebSocket
+  // Subscribe to ROS topics using our shared connection
   useEffect(() => {
-    // Skip the ROS connection if running in development environment without proper libraries
-    if (typeof window === 'undefined' || !window.ROSLIB) {
-      console.warn('ROSLIB not available - ROS2 connection disabled');
+    if (!rosConnected || typeof window === 'undefined' || !window.ROSLIB) {
       return;
     }
 
-    let ros: any = null;
-    let batteryTopic: any = null;
-    let deviceTopics: any = {};
-    let reconnectTimer: any = null;
-    let reconnectAttempts = 0;
-    const maxReconnectAttempts = 10; // Maximum reconnection attempts
-    const reconnectInterval = 3000; // 3 seconds between reconnection attempts
-
-    // Function to subscribe to topics
-    const subscribeToTopics = () => {
-      // Subscribe to battery voltage topic
-      batteryTopic = new window.ROSLIB.Topic({
-        ros: ros,
-        name: '/robot_status/battery_voltage',
-        messageType: 'std_msgs/msg/Float32'
-      });
-
+    // Subscribe to battery voltage topic
+    const batteryTopic = getTopicHandler('/robot_status/battery_voltage', 'std_msgs/msg/Float32');
+    if (batteryTopic) {
       batteryTopic.subscribe((message: any) => {
         const voltage = parseFloat(message.data);
         if (!isNaN(voltage)) {
           setBatteryVoltage(parseFloat(voltage.toFixed(1)));
         }
       });
+    }
 
-      // Subscribe to device status topics
-      const deviceTopicNames = {
-        chassis: '/robot_status/usb/chassis',
-        mission: '/robot_status/usb/mission',
-        lidar: '/robot_status/usb/lidar',
-        esp32: '/robot_status/usb/esp',
-        imu: '/robot_status/usb/imu'
-      };
+    // Subscribe to device status topics
+    const deviceTopicNames = {
+      chassis: '/robot_status/usb/chassis',
+      mission: '/robot_status/usb/mission',
+      lidar: '/robot_status/usb/lidar',
+      esp32: '/robot_status/usb/esp',
+      imu: '/robot_status/usb/imu'
+    };
 
-      // Create topics and subscribe
-      Object.entries(deviceTopicNames).forEach(([device, topicName]) => {
-        const topic = new window.ROSLIB.Topic({
-          ros: ros,
-          name: topicName,
-          messageType: 'std_msgs/msg/Bool'
-        });
-
+    // Create topics and subscribe
+    const deviceTopics: Record<string, any> = {};
+    Object.entries(deviceTopicNames).forEach(([device, topicName]) => {
+      const topic = getTopicHandler(topicName, 'std_msgs/msg/Bool');
+      if (topic) {
         topic.subscribe((message: any) => {
-          setDeviceStatus(prev => ({
+          setDeviceStatus((prev: DeviceStatusType) => ({
             ...prev,
             [device]: message.data
           }));
         });
-
         deviceTopics[device] = topic;
-      });
-    };
-
-    // Function to connect to ROS
-    const connectToROS = () => {
-      // Clear previous connection
-      if (ros) {
-        try {
-          ros.close();
-        } catch (e) {
-          console.error("Error closing previous connection:", e);
-        }
       }
+    });
 
-      // Unsubscribe from all existing subscriptions
+    // Subscribe to robot ready signal (over plug interface)
+    const plugTopic = getTopicHandler('/robot/startup/plug', 'std_msgs/msg/Bool');
+    if (plugTopic) {
+      plugTopic.subscribe((message: any) => {
+        setPlugConnected(message.data);
+      });
+    }
+
+    // Cleanup function
+    return () => {
       if (batteryTopic) {
         try {
           batteryTopic.unsubscribe();
@@ -123,6 +107,7 @@ export default function RobotDashboard() {
         }
       }
       
+      // Unsubscribe from all device topics
       Object.values(deviceTopics).forEach((topic: any) => {
         if (topic) {
           try {
@@ -133,108 +118,16 @@ export default function RobotDashboard() {
         }
       });
       
-      // Reset device status
-      setDeviceStatus({
-        chassis: false,
-        mission: false,
-        lidar: false,
-        esp32: false,
-        imu: false
-      });
-      
-      try {
-        // Establish new ROS connection
-        ros = new window.ROSLIB.Ros({
-          url: rosUrl
-        });
-
-        // ROS connection event handler
-        ros.on('connection', () => {
-          console.log('Connected to ROS2 bridge');
-          setRosConnected(true);
-          reconnectAttempts = 0; // Reset reconnection counter
-          
-          // Subscribe to topics after successful connection
-          subscribeToTopics();
-        });
-
-        ros.on('error', (error: any) => {
-          console.error('Error connecting to ROS2 bridge:', error);
-          setRosConnected(false);
-          attemptReconnect();
-        });
-
-        ros.on('close', () => {
-          console.log('Connection to ROS2 bridge closed');
-          setRosConnected(false);
-          attemptReconnect();
-        });
-      } catch (error) {
-        console.error('Failed to initialize ROS2 connection:', error);
-        setRosConnected(false);
-        attemptReconnect();
-      }
-    };
-
-    // Function to attempt reconnection
-    const attemptReconnect = () => {
-      // Avoid multiple reconnection requests
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-      
-      // If reconnection attempts are less than the maximum, attempt reconnection
-      if (reconnectAttempts < maxReconnectAttempts) {
-        reconnectAttempts++;
-        console.log(`Attempting to reconnect to ROS (attempt ${reconnectAttempts}/${maxReconnectAttempts})...`);
-        
-        reconnectTimer = setTimeout(() => {
-          reconnectTimer = null;
-          connectToROS();
-        }, reconnectInterval);
-      } else {
-        console.warn('Maximum reconnection attempts reached. Please refresh the page.');
-      }
-    };
-
-    // Initial connection
-    connectToROS();
-
-    // Cleanup function
-    return () => {
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-      }
-      
-      if (batteryTopic) {
+      // Unsubscribe from plug topic
+      if (plugTopic) {
         try {
-          batteryTopic.unsubscribe();
+          plugTopic.unsubscribe();
         } catch (e) {
-          console.error("Error during cleanup:", e);
-        }
-      }
-      
-      // Unsubscribe from all topics
-      Object.values(deviceTopics).forEach((topic: any) => {
-        if (topic) {
-          try {
-            topic.unsubscribe();
-          } catch (e) {
-            console.error("Error during cleanup:", e);
-          }
-        }
-      });
-      
-      if (ros) {
-        try {
-          ros.close();
-        } catch (e) {
-          console.error("Error during cleanup:", e);
+          console.error("Error unsubscribing from plug topic:", e);
         }
       }
     };
-  }, [rosUrl]);
+  }, [rosConnected, getTopicHandler]);
 
   // Fallback: handle disconnected state
   useEffect(() => {
@@ -259,7 +152,7 @@ export default function RobotDashboard() {
     // Low-pass filter - alpha determines how much new readings affect the filtered value
     // Lower alpha means more smoothing but slower response to real changes
     const alpha = 0.5;
-    setFilteredVoltage(prev => {
+    setFilteredVoltage((prev: number) => {
       return parseFloat((prev * (1 - alpha) + batteryVoltage * alpha).toFixed(1));
     });
   }, [batteryVoltage, isVoltageAvailable]);
@@ -393,6 +286,91 @@ export default function RobotDashboard() {
             <StatusItem color="yellow" label="CAMERA" />
             <StatusItem color="green" label="NAVIGATION" />
             <StatusItem color="red" label="LOCALIZATION" />
+          </StatusPanel>
+
+          {/* Robot Ready Signal Status */}
+          <StatusPanel title="">
+            <div className="flex items-center space-x-6">
+              <div className="relative w-28 h-28 flex items-center justify-center">
+                {/* Robot container with background */}
+                <div className={`absolute inset-0 rounded-full ${plugConnected ? 'bg-[#121212]' : 'bg-[#181818]'} border-2 ${plugConnected ? 'border-[#4caf50]' : 'border-[#f44336]'} flex items-center justify-center overflow-hidden`}>
+                  
+                  {/* Robot body */}
+                  <div className="relative">
+                    {/* Robot head */}
+                    <div className={`w-14 h-10 rounded-t-lg ${plugConnected ? 'bg-[#2a2a2a]' : 'bg-[#222]'} border-2 border-[#555] relative mb-1 transition-colors duration-300`}>
+                      {/* Robot eyes */}
+                      <div className="absolute top-2 left-2 w-3 h-3 rounded-full bg-[#333] border border-[#444] overflow-hidden">
+                        <div className={`absolute inset-0 rounded-full ${plugConnected ? 'bg-[#4caf50]' : 'bg-[#555]'} transition-colors duration-300`}></div>
+                        {plugConnected && (
+                          <div className="absolute top-0 left-0 w-full h-full bg-white opacity-70 animate-ping"></div>
+                        )}
+                      </div>
+                      <div className="absolute top-2 right-2 w-3 h-3 rounded-full bg-[#333] border border-[#444] overflow-hidden">
+                        <div className={`absolute inset-0 rounded-full ${plugConnected ? 'bg-[#4caf50]' : 'bg-[#555]'} transition-colors duration-300`}></div>
+                        {plugConnected && (
+                          <div className="absolute top-0 left-0 w-full h-full bg-white opacity-70 animate-ping" style={{ animationDelay: '0.5s' }}></div>
+                        )}
+                      </div>
+                      
+                      {/* Robot antenna */}
+                      <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 w-1 h-3 bg-[#666]">
+                        <div className={`absolute -top-1 left-1/2 transform -translate-x-1/2 w-2 h-2 rounded-full ${plugConnected ? 'bg-[#ff5252]' : 'bg-[#666]'} transition-colors duration-300`}>
+                          {plugConnected && (
+                            <div className="absolute inset-0 rounded-full bg-[#ff5252] animate-pulse"></div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    
+                    {/* Robot body */}
+                    <div className={`w-14 h-12 ${plugConnected ? 'bg-[#2a2a2a]' : 'bg-[#222]'} border-2 border-[#555] rounded-b-lg relative transition-colors duration-300`}>
+                      {/* Display screen */}
+                      <div className="absolute top-1 left-1/2 transform -translate-x-1/2 w-10 h-4 bg-[#111] border border-[#444] rounded-sm overflow-hidden">
+                        {/* Status lights */}
+                        <div className="flex justify-around items-center h-full px-1">
+                          <div className={`w-1.5 h-1.5 rounded-full ${plugConnected ? 'bg-[#4caf50]' : 'bg-[#333]'} transition-colors duration-300`}></div>
+                          <div className={`w-1.5 h-1.5 rounded-full ${plugConnected ? 'bg-[#ffb74d]' : 'bg-[#333]'} transition-colors duration-300 ${plugConnected ? 'animate-pulse' : ''}`}></div>
+                          <div className={`w-1.5 h-1.5 rounded-full ${plugConnected ? 'bg-[#2196f3]' : 'bg-[#333]'} transition-colors duration-300`}></div>
+                        </div>
+                      </div>
+                      
+                      {/* Control buttons */}
+                      <div className="absolute bottom-1 left-0 right-0 flex justify-center space-x-1">
+                        <div className={`w-2 h-2 rounded-full ${plugConnected ? 'bg-[#ff5252]' : 'bg-[#444]'} transition-colors duration-300`}></div>
+                        <div className={`w-2 h-2 rounded-full ${plugConnected ? 'bg-[#ffb74d]' : 'bg-[#444]'} transition-colors duration-300`}></div>
+                      </div>
+                    </div>
+                    
+                    {/* Robot arms - with movement when active */}
+                    <div className={`absolute -left-3 top-10 w-1.5 h-10 bg-[#444] rounded-full transition-all duration-500 origin-top ${plugConnected ? 'transform rotate-12' : ''}`}>
+                      <div className={`absolute bottom-0 w-2.5 h-2.5 rounded-full bg-[#555] transition-all duration-500`}></div>
+                    </div>
+                    <div className={`absolute -right-3 top-10 w-1.5 h-10 bg-[#444] rounded-full transition-all duration-500 origin-top ${plugConnected ? 'transform -rotate-12' : ''}`}>
+                      <div className={`absolute bottom-0 w-2.5 h-2.5 rounded-full bg-[#555] transition-all duration-500`}></div>
+                    </div>
+                  </div>
+                  
+                  {/* Base/ground effect */}
+                  <div className="absolute bottom-0 left-0 right-0 h-3 bg-gradient-to-t from-[#333] to-transparent"></div>
+                </div>
+                
+                {/* Pulse effect behind robot when active */}
+                {plugConnected && (
+                  <div className="absolute -z-10 inset-0 rounded-full bg-[#4caf50] opacity-10 animate-pulse"></div>
+                )}
+              </div>
+              
+              <div className="flex flex-col">
+                <div className="text-2xl font-bold text-white">Startup Signal</div>
+                <div className={`text-xl ${plugConnected ? 'text-[#4caf50]' : 'text-[#f44336]'}`}>
+                  {plugConnected ? 'Ready' : 'Not Ready'}
+                </div>
+                {plugConnected && (
+                  <div className="text-sm text-[#99c09a] mt-1 animate-pulse">Systems online</div>
+                )}
+              </div>
+            </div>
           </StatusPanel>
 
           {/* Checkboxes */}
@@ -661,7 +639,7 @@ export default function RobotDashboard() {
 function StatusPanel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="bg-[#181818] p-6 rounded-lg shadow-md mb-6 w-full min-w-[300px]">
-      <h3 className="text-4xl font-bold text-[#ff4d4d] mb-6 uppercase">{title}</h3>
+      {title && <h3 className="text-4xl font-bold text-[#ff4d4d] mb-6 uppercase">{title}</h3>}
       <div>{children}</div>
     </div>
   );

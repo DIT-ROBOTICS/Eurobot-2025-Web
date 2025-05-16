@@ -1,9 +1,11 @@
 import playmatImage from "../assets/playmat_2025_FINAL.png";
 import { useState, useEffect } from "react";
+import { useRosConnection } from "../utils/useRosConnection";
 
 export default function Playmat() {
   const [estimatedScore, setEstimatedScore] = useState(320);
   const [isHalfScreen, setIsHalfScreen] = useState(false);
+  const { connected, getTopicHandler } = useRosConnection();
   
   // Detect half-screen mode
   useEffect(() => {
@@ -27,6 +29,35 @@ export default function Playmat() {
     window.addEventListener('storage', checkHalfScreen);
     return () => window.removeEventListener('storage', checkHalfScreen);
   }, []);
+
+  // Subscribe to score topic from ROS
+  useEffect(() => {
+    if (!connected || typeof window === 'undefined' || !window.ROSLIB) {
+      return;
+    }
+
+    // Create topic for score updates
+    const scoreTopic = getTopicHandler('/score', 'std_msgs/msg/Int32');
+    
+    if (scoreTopic) {
+      // Subscribe to the score topic
+      scoreTopic.subscribe((message: any) => {
+        const score = parseInt(message.data);
+        if (!isNaN(score)) {
+          setEstimatedScore(score);
+        }
+      });
+      
+      // Clean up subscription
+      return () => {
+        try {
+          scoreTopic.unsubscribe();
+        } catch (e) {
+          console.error("Error unsubscribing from score topic:", e);
+        }
+      };
+    }
+  }, [connected, getTopicHandler]);
   
   // Use numeric codes (0-19) as button states
   const [toggleStates, setToggleStates] = useState(
