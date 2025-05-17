@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "start": "vite preview --host"
+    "server": "node src/server.js",
+    "start": "npm run build && npm run server"
   },
   "dependencies": {
     "@radix-ui/react-progress": "^1.1.6",
@@ -18,6 +19,8 @@
     "@tailwindcss/vite": "^4.1.6",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "express": "^4.18.2",
+    "js-yaml": "^4.1.0",
     "lucide-react": "^0.509.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

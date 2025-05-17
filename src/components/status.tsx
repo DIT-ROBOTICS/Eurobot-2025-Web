@@ -1,12 +1,13 @@
 import { useState, useEffect } from "react";
 import Status3DModel from "./Status3DModel";
+import { useRosConnection } from "../utils/useRosConnection";
 
 export default function RobotDashboard() {
-  const [batteryVoltage, setBatteryVoltage] = useState(19.7);
-  const [filteredVoltage, setFilteredVoltage] = useState(19.7); // Filtered voltage value
-  const [isConnected, setIsConnected] = useState(true);
-  const [debugStatus, setDebugStatus] = useState("Debug Panel");
-  const [storageStatus, setStorageStatus] = useState("Full");
+  const [batteryVoltage, setBatteryVoltage] = useState(20.25);
+  const [filteredVoltage, setFilteredVoltage] = useState(20.25); // Filtered voltage value
+  const [plugConnected, setPlugConnected] = useState(false); // Ready signal over plug interface
+  const [lastPlugTrueTime, setLastPlugTrueTime] = useState(0); // Time when the last true plug signal was received
+  const [isHalfScreen, setIsHalfScreen] = useState(false); // New state for half-screen mode
   const [simaStatuses, setSimaStatuses] = useState([
     { id: "01", connected: false, url: "http://dit-sima-01.local/" },
     { id: "02", connected: false, url: "http://dit-sima-02.local/" },
@@ -22,9 +23,10 @@ export default function RobotDashboard() {
   const [hostname, setHostname] = useState(() => {
     // Get saved hostname from localStorage, use default if not found
     const saved = localStorage.getItem('bms-hostname');
-    return saved || "DIT-2025-11";
+    return saved || "DIT-2025-10";
   });
-  const [rosConnected, setRosConnected] = useState(false);
+  // Use the shared ROS connection hook
+  const { connected: rosConnected, getTopicHandler } = useRosConnection();
   const [isVoltageAvailable, setIsVoltageAvailable] = useState(true);
   // Long press reload state
   const [pressTimer, setPressTimer] = useState<any>(null);
@@ -37,43 +39,69 @@ export default function RobotDashboard() {
     esp32: false,
     imu: false
   });
+  const [rivalRadius, setRivalRadius] = useState(22); // Default rival radius in cm
+  const [updateStatus, setUpdateStatus] = useState<{ 
+    message: string; 
+    isError: boolean; 
+    visible: boolean 
+  }>({ message: '', isError: false, visible: false });
+
+  // Define the type for device status
+  type DeviceStatusType = typeof deviceStatus;
 
   // Extract host number from hostname for connection URLs
   const hostNumber = hostname.split('-')[2] || "";
   const bmsUrl = `http://dit-2025-${hostNumber}-esp.local/`;
-  const rosUrl = `ws://dit-2025-${hostNumber}.local:9090`;
 
-  // Connect to ROS2 bridge via WebSocket
+  // Detect half-screen mode
   useEffect(() => {
-    // Skip the ROS connection if running in development environment without proper libraries
-    if (typeof window === 'undefined' || !window.ROSLIB) {
-      console.warn('ROSLIB not available - ROS2 connection disabled');
+    try {
+      const savedValue = localStorage.getItem('isHalfScreen');
+      setIsHalfScreen(savedValue === 'true');
+      
+      // Listen for changes to half-screen mode from other components
+      const checkHalfScreen = () => {
+        try {
+          const savedValue = localStorage.getItem('isHalfScreen');
+          setIsHalfScreen(savedValue === 'true');
+        } catch (error) {
+          console.warn('Could not detect half screen mode:', error);
+        }
+      };
+
+      // Add event listener for storage events
+      window.addEventListener('storage', checkHalfScreen);
+      document.addEventListener('visibilitychange', checkHalfScreen);
+      
+      // Also set up a polling mechanism to check periodically
+      const interval = setInterval(checkHalfScreen, 1000);
+      
+      return () => {
+        window.removeEventListener('storage', checkHalfScreen);
+        document.removeEventListener('visibilitychange', checkHalfScreen);
+        clearInterval(interval);
+      };
+    } catch (error) {
+      console.warn('Could not detect half screen mode:', error);
+    }
+  }, []);
+
+  // Subscribe to ROS topics using our shared connection
+  useEffect(() => {
+    if (!rosConnected || typeof window === 'undefined' || !window.ROSLIB) {
       return;
     }
 
-    let ros: any = null;
-    let batteryTopic: any = null;
-    let deviceTopics: any = {};
-    let reconnectTimer: any = null;
-    let reconnectAttempts = 0;
-    const maxReconnectAttempts = 10; // Maximum reconnection attempts
-    const reconnectInterval = 3000; // 3 seconds between reconnection attempts
-
-    // Function to subscribe to topics
-    const subscribeToTopics = () => {
       // Subscribe to battery voltage topic
-      batteryTopic = new window.ROSLIB.Topic({
-        ros: ros,
-        name: '/robot_status/battery_voltage',
-        messageType: 'std_msgs/msg/Float32'
-      });
-
+    const batteryTopic = getTopicHandler('/robot_status/battery_voltage', 'std_msgs/msg/Float32');
+    if (batteryTopic) {
       batteryTopic.subscribe((message: any) => {
         const voltage = parseFloat(message.data);
         if (!isNaN(voltage)) {
           setBatteryVoltage(parseFloat(voltage.toFixed(1)));
         }
       });
+    }
 
       // Subscribe to device status topics
       const deviceTopicNames = {
@@ -85,36 +113,37 @@ export default function RobotDashboard() {
       };
 
       // Create topics and subscribe
+    const deviceTopics: Record<string, any> = {};
       Object.entries(deviceTopicNames).forEach(([device, topicName]) => {
-        const topic = new window.ROSLIB.Topic({
-          ros: ros,
-          name: topicName,
-          messageType: 'std_msgs/msg/Bool'
-        });
-
+      const topic = getTopicHandler(topicName, 'std_msgs/msg/Bool');
+      if (topic) {
         topic.subscribe((message: any) => {
-          setDeviceStatus(prev => ({
+          setDeviceStatus((prev: DeviceStatusType) => ({
             ...prev,
             [device]: message.data
           }));
         });
-
         deviceTopics[device] = topic;
-      });
-    };
+      }
+    });
 
-    // Function to connect to ROS
-    const connectToROS = () => {
-      // Clear previous connection
-      if (ros) {
-        try {
-          ros.close();
-        } catch (e) {
-          console.error("Error closing previous connection:", e);
+    // Subscribe to robot ready signal (over plug interface)
+    const plugTopic = getTopicHandler('/robot/startup/plug', 'std_msgs/msg/Bool');
+    if (plugTopic) {
+      plugTopic.subscribe((message: any) => {
+        if (message.data) {
+          // If we receive a true signal, update the connected status and record the timestamp
+          setPlugConnected(true);
+          setLastPlugTrueTime(Date.now());
+        } else {
+          // If we receive false, immediately set to false
+          setPlugConnected(false);
         }
+      });
       }
 
-      // Unsubscribe from all existing subscriptions
+    // Cleanup function
+    return () => {
       if (batteryTopic) {
         try {
           batteryTopic.unsubscribe();
@@ -123,6 +152,7 @@ export default function RobotDashboard() {
         }
       }
       
+      // Unsubscribe from all device topics
       Object.values(deviceTopics).forEach((topic: any) => {
         if (topic) {
           try {
@@ -133,108 +163,36 @@ export default function RobotDashboard() {
         }
       });
       
-      // Reset device status
-      setDeviceStatus({
-        chassis: false,
-        mission: false,
-        lidar: false,
-        esp32: false,
-        imu: false
-      });
-      
-      try {
-        // Establish new ROS connection
-        ros = new window.ROSLIB.Ros({
-          url: rosUrl
-        });
-
-        // ROS connection event handler
-        ros.on('connection', () => {
-          console.log('Connected to ROS2 bridge');
-          setRosConnected(true);
-          reconnectAttempts = 0; // Reset reconnection counter
-          
-          // Subscribe to topics after successful connection
-          subscribeToTopics();
-        });
-
-        ros.on('error', (error: any) => {
-          console.error('Error connecting to ROS2 bridge:', error);
-          setRosConnected(false);
-          attemptReconnect();
-        });
-
-        ros.on('close', () => {
-          console.log('Connection to ROS2 bridge closed');
-          setRosConnected(false);
-          attemptReconnect();
-        });
-      } catch (error) {
-        console.error('Failed to initialize ROS2 connection:', error);
-        setRosConnected(false);
-        attemptReconnect();
-      }
-    };
-
-    // Function to attempt reconnection
-    const attemptReconnect = () => {
-      // Avoid multiple reconnection requests
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-      
-      // If reconnection attempts are less than the maximum, attempt reconnection
-      if (reconnectAttempts < maxReconnectAttempts) {
-        reconnectAttempts++;
-        console.log(`Attempting to reconnect to ROS (attempt ${reconnectAttempts}/${maxReconnectAttempts})...`);
-        
-        reconnectTimer = setTimeout(() => {
-          reconnectTimer = null;
-          connectToROS();
-        }, reconnectInterval);
-      } else {
-        console.warn('Maximum reconnection attempts reached. Please refresh the page.');
-      }
-    };
-
-    // Initial connection
-    connectToROS();
-
-    // Cleanup function
-    return () => {
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-      }
-      
-      if (batteryTopic) {
+      // Unsubscribe from plug topic
+      if (plugTopic) {
         try {
-          batteryTopic.unsubscribe();
+          plugTopic.unsubscribe();
         } catch (e) {
-          console.error("Error during cleanup:", e);
-        }
-      }
-      
-      // Unsubscribe from all topics
-      Object.values(deviceTopics).forEach((topic: any) => {
-        if (topic) {
-          try {
-            topic.unsubscribe();
-          } catch (e) {
-            console.error("Error during cleanup:", e);
-          }
-        }
-      });
-      
-      if (ros) {
-        try {
-          ros.close();
-        } catch (e) {
-          console.error("Error during cleanup:", e);
+          console.error("Error unsubscribing from plug topic:", e);
         }
       }
     };
-  }, [rosUrl]);
+  }, [rosConnected, getTopicHandler]);
+
+  // Add a timeout effect to reset plugConnected to false if no true signal received for 5 seconds
+  useEffect(() => {
+    // Skip if not currently connected
+    if (!plugConnected) return;
+
+    // Set up interval to check for timeout
+    const intervalId = setInterval(() => {
+      const now = Date.now();
+      const timeSinceLastTrue = now - lastPlugTrueTime;
+      
+      // If it's been more than 5 seconds since the last true signal, set to false
+      if (timeSinceLastTrue > 5000) {
+        setPlugConnected(false);
+      }
+    }, 1000); // Check every second
+    
+    // Clean up interval on unmount or when plugConnected changes
+    return () => clearInterval(intervalId);
+  }, [plugConnected, lastPlugTrueTime]);
 
   // Fallback: handle disconnected state
   useEffect(() => {
@@ -259,7 +217,7 @@ export default function RobotDashboard() {
     // Low-pass filter - alpha determines how much new readings affect the filtered value
     // Lower alpha means more smoothing but slower response to real changes
     const alpha = 0.5;
-    setFilteredVoltage(prev => {
+    setFilteredVoltage((prev: number) => {
       return parseFloat((prev * (1 - alpha) + batteryVoltage * alpha).toFixed(1));
     });
   }, [batteryVoltage, isVoltageAvailable]);
@@ -383,6 +341,94 @@ export default function RobotDashboard() {
     return () => clearInterval(intervalId);
   }, []);
 
+  // Fetch current rival radius from backend on component mount
+  useEffect(() => {
+    const fetchRivalRadius = async () => {
+      try {
+        const response = await fetch('/api/rival-radius');
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        if (data.success && data.radius) {
+          // Convert from meters to centimeters
+          setRivalRadius(data.radius * 100);
+        }
+      } catch (error) {
+        console.error("Error fetching rival radius:", error);
+        // Keep using default value on error
+      }
+    };
+    
+    fetchRivalRadius();
+  }, []); // Empty dependency array means this runs once on mount
+
+  // Function to update rival radius
+  const handleUpdateRivalRadius = async (newRadius: number) => {
+    try {
+      setUpdateStatus({ message: 'Updating...', isError: false, visible: true });
+      
+      // Convert from cm to m for storage
+      const radiusM = newRadius / 100;
+      console.log(`Sending radius update request: ${radiusM}m`);
+      
+      // Direct file update via API
+      const response = await fetch('/api/rival-radius', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ radius: radiusM }),
+      });
+      
+      // Check if the response is OK
+      if (!response.ok) {
+        // Try to parse error response
+        let errorMessage = 'Failed to update radius';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.message || errorMessage;
+        } catch (parseError) {
+          errorMessage = `Network error (${response.status}): ${response.statusText}`;
+          console.error('Failed to parse error response:', parseError);
+        }
+        throw new Error(errorMessage);
+      }
+      
+      // Parse success response
+      const jsonResponse = await response.json();
+      console.log('Update response:', jsonResponse);
+      
+      // Set success message
+      setUpdateStatus({ 
+        message: `Radius updated to ${Math.round(jsonResponse.radius * 100)}cm!`, 
+        isError: false, 
+        visible: true 
+      });
+      
+      // Hide the status message after 3 seconds
+      setTimeout(() => {
+        setUpdateStatus((prev) => ({ ...prev, visible: false }));
+      }, 3000);
+      
+    } catch (error) {
+      console.error("Error updating rival radius:", error);
+      setUpdateStatus({ 
+        message: error instanceof Error ? error.message : 'Error updating radius', 
+        isError: true, 
+        visible: true 
+      });
+      
+      // Hide error message after 3 seconds
+      setTimeout(() => {
+        setUpdateStatus((prev) => ({ ...prev, visible: false }));
+      }, 3000);
+    }
+  };
+
   return (
     <div className="h-full w-full bg-[#0e0e0e] p-6 overflow-y-auto">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -409,6 +455,34 @@ export default function RobotDashboard() {
         </div>
 
         <div className="space-y-6">
+
+          {/* Robot Ready Signal Status */}
+          <StatusPanel title="">
+            <div className="flex items-center space-x-6">
+              <div className="relative w-28 h-28 flex items-center justify-center">
+                {/* Banter Loader Animation */}
+                <div className={`banter-loader ${!plugConnected && 'banter-loader--inactive'}`}>
+                  <div className="banter-loader__box"></div>
+                  <div className="banter-loader__box"></div>
+                  <div className="banter-loader__box"></div>
+                  <div className="banter-loader__box"></div>
+                  <div className="banter-loader__box"></div>
+                  <div className="banter-loader__box"></div>
+                  <div className="banter-loader__box"></div>
+                  <div className="banter-loader__box"></div>
+                  <div className="banter-loader__box"></div>
+                </div>
+              </div>
+              
+              <div className="flex flex-col">
+                <div className="text-2xl font-bold text-white">Startup Signal</div>
+                <div className={`text-xl font-mono ${plugConnected ? 'text-[#ff4d4d]' : 'text-[#777]'}`}>
+                  {plugConnected ? 'READY' : 'STANDBY'}
+                </div>
+              </div>
+            </div>
+          </StatusPanel>
+          
           {/* SIMA Status */}
           <StatusPanel title="SIMA Status">
             <div className="grid grid-cols-2 gap-4 min-w-[300px]">
@@ -508,7 +582,7 @@ export default function RobotDashboard() {
               {isSettingOpen && (
                 <div className="bg-[#242424] p-4 rounded-md mb-4 relative">
                   <div className="flex flex-col">
-                    <label className="text-[#e0e0e0] text-xl mb-2">Hostname (e.g. DIT-2025-11)</label>
+                    <label className="text-[#e0e0e0] text-xl mb-2">Hostname (e.g. DIT-2025-10)</label>
                     <input 
                       type="text" 
                       value={hostnameInput} 
@@ -560,12 +634,53 @@ export default function RobotDashboard() {
               </div>
             </div>
           </StatusPanel>
+
+          {/* Rival Robot Parameters Panel */}
+          <StatusPanel title="Rival Parameters">
+            <div className="flex flex-col space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="text-[#e0e0e0] text-xl">Rival Robot Radius:</div>
+                <div className="text-white text-xl font-bold">{rivalRadius} cm</div>
+              </div>
+              
+              <div className="flex flex-col space-y-2">
+                <input
+                  type="range"
+                  min="0"
+                  max="50"
+                  step="1"
+                  value={rivalRadius}
+                  onChange={(e) => setRivalRadius(parseInt(e.target.value))}
+                  className="w-full h-3 bg-[#333] rounded-lg appearance-none cursor-pointer"
+                />
+                
+                <div className="flex justify-between text-[#999] text-sm">
+                  <span>0 cm</span>
+                  <span>25 cm</span>
+                  <span>50 cm</span>
+                </div>
+              </div>
+              
+              {updateStatus.visible && (
+                <div className={`text-center py-2 rounded-md text-lg ${updateStatus.isError ? 'bg-[#3a0909] text-[#ff6b6b]' : 'bg-[#0a2e0a] text-[#6bff6b]'}`}>
+                  {updateStatus.message}
+                </div>
+              )}
+              
+              <button
+                onClick={() => handleUpdateRivalRadius(rivalRadius)}
+                className="bg-[#d32f2f] text-white text-xl font-bold py-3 px-5 rounded-md w-full block text-center uppercase tracking-wider hover:bg-[#ff4d4d] transition-colors duration-300 mt-4"
+              >
+                UPDATE RADIUS
+              </button>
+            </div>
+          </StatusPanel>
         </div>
       </div>
 
       {/* Floating Bridge Status Indicator - Now a refresh button */}
       <div 
-        className="fixed bottom-10 right-10 z-50 flex items-center gap-8 bg-black/70 backdrop-blur-md rounded-2xl px-8 py-5 border-2 border-[#444] shadow-2xl transition-all duration-300 hover:bg-black/80 cursor-pointer select-none"
+        className={`fixed ${isHalfScreen ? 'bottom-40' : 'bottom-10'} right-10 z-50 flex items-center gap-8 bg-black/70 backdrop-blur-md rounded-2xl px-8 py-5 border-2 border-[#444] shadow-2xl transition-all duration-300 hover:bg-black/80 cursor-pointer select-none`}
         onMouseDown={() => {
           // Start long-press timer
           const timer = setInterval(() => {
@@ -644,7 +759,10 @@ export default function RobotDashboard() {
         )}
       </div>
 
-      <style jsx global>{`
+      {/* Add extra bottom space to prevent content from being hidden behind fixed elements */}
+      <div className="h-32 md:h-40 w-full"></div>
+
+      <style jsx={true} global={true}>{`
         ::-webkit-scrollbar {
           display: none;
         }
@@ -652,6 +770,275 @@ export default function RobotDashboard() {
         * {
           -ms-overflow-style: none;
           scrollbar-width: none;
+        }
+        
+        @keyframes scan {
+          0% { transform: translateY(-100%); }
+          100% { transform: translateY(400%); }
+        }
+        
+        .animate-scan {
+          animation: scan 2s linear infinite;
+        }
+        
+        @keyframes spin-slow {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+        
+        .animate-spin-slow {
+          animation: spin-slow 15s linear infinite;
+        }
+
+        /* Banter Loader Animation */
+        .banter-loader {
+          position: relative;
+          width: 72px;
+          height: 72px;
+          transform: scale(0.7);
+          transition: opacity 0.5s ease;
+        }
+
+        .banter-loader__box {
+          float: left;
+          position: relative;
+          width: 20px;
+          height: 20px;
+          margin-right: 6px;
+        }
+
+        .banter-loader__box:before {
+          content: "";
+          position: absolute;
+          left: 0;
+          top: 0;
+          width: 100%;
+          height: 100%;
+          background: white;
+          transition: opacity 0.5s ease, transform 0.3s ease;
+        }
+
+        .banter-loader--inactive {
+          opacity: 0.4;
+        }
+
+        .banter-loader--inactive .banter-loader__box:before {
+          background: white;
+        }
+
+        .banter-loader__box:nth-child(3n) {
+          margin-right: 0;
+          margin-bottom: 6px;
+        }
+
+        .banter-loader__box:nth-child(1):before, .banter-loader__box:nth-child(4):before {
+          margin-left: 26px;
+        }
+
+        .banter-loader__box:nth-child(3):before {
+          margin-top: 52px;
+        }
+
+        .banter-loader__box:last-child {
+          margin-bottom: 0;
+        }
+
+        @keyframes moveBox-1 {
+          9.0909090909% { transform: translate(-26px, 0); }
+          18.1818181818% { transform: translate(0px, 0); }
+          27.2727272727% { transform: translate(0px, 0); }
+          36.3636363636% { transform: translate(26px, 0); }
+          45.4545454545% { transform: translate(26px, 26px); }
+          54.5454545455% { transform: translate(26px, 26px); }
+          63.6363636364% { transform: translate(26px, 26px); }
+          72.7272727273% { transform: translate(26px, 0px); }
+          81.8181818182% { transform: translate(0px, 0px); }
+          90.9090909091% { transform: translate(-26px, 0px); }
+          100% { transform: translate(0px, 0px); }
+        }
+
+        .banter-loader__box:nth-child(1) {
+          animation: moveBox-1 4s infinite;
+        }
+        
+        .banter-loader--inactive .banter-loader__box:nth-child(1) {
+          animation: none;
+        }
+
+        @keyframes moveBox-2 {
+          9.0909090909% { transform: translate(0, 0); }
+          18.1818181818% { transform: translate(26px, 0); }
+          27.2727272727% { transform: translate(0px, 0); }
+          36.3636363636% { transform: translate(26px, 0); }
+          45.4545454545% { transform: translate(26px, 26px); }
+          54.5454545455% { transform: translate(26px, 26px); }
+          63.6363636364% { transform: translate(26px, 26px); }
+          72.7272727273% { transform: translate(26px, 26px); }
+          81.8181818182% { transform: translate(0px, 26px); }
+          90.9090909091% { transform: translate(0px, 26px); }
+          100% { transform: translate(0px, 0px); }
+        }
+
+        .banter-loader__box:nth-child(2) {
+          animation: moveBox-2 4s infinite;
+        }
+        
+        .banter-loader--inactive .banter-loader__box:nth-child(2) {
+          animation: none;
+        }
+
+        @keyframes moveBox-3 {
+          9.0909090909% { transform: translate(-26px, 0); }
+          18.1818181818% { transform: translate(-26px, 0); }
+          27.2727272727% { transform: translate(0px, 0); }
+          36.3636363636% { transform: translate(-26px, 0); }
+          45.4545454545% { transform: translate(-26px, 0); }
+          54.5454545455% { transform: translate(-26px, 0); }
+          63.6363636364% { transform: translate(-26px, 0); }
+          72.7272727273% { transform: translate(-26px, 0); }
+          81.8181818182% { transform: translate(-26px, -26px); }
+          90.9090909091% { transform: translate(0px, -26px); }
+          100% { transform: translate(0px, 0px); }
+        }
+
+        .banter-loader__box:nth-child(3) {
+          animation: moveBox-3 4s infinite;
+        }
+        
+        .banter-loader--inactive .banter-loader__box:nth-child(3) {
+          animation: none;
+        }
+
+        @keyframes moveBox-4 {
+          9.0909090909% { transform: translate(-26px, 0); }
+          18.1818181818% { transform: translate(-26px, 0); }
+          27.2727272727% { transform: translate(-26px, -26px); }
+          36.3636363636% { transform: translate(0px, -26px); }
+          45.4545454545% { transform: translate(0px, 0px); }
+          54.5454545455% { transform: translate(0px, -26px); }
+          63.6363636364% { transform: translate(0px, -26px); }
+          72.7272727273% { transform: translate(0px, -26px); }
+          81.8181818182% { transform: translate(26px, -26px); }
+          90.9090909091% { transform: translate(26px, 0px); }
+          100% { transform: translate(0px, 0px); }
+        }
+
+        .banter-loader__box:nth-child(4) {
+          animation: moveBox-4 4s infinite;
+        }
+        
+        .banter-loader--inactive .banter-loader__box:nth-child(4) {
+          animation: none;
+        }
+
+        @keyframes moveBox-5 {
+          9.0909090909% { transform: translate(0, 0); }
+          18.1818181818% { transform: translate(0, 0); }
+          27.2727272727% { transform: translate(0, 0); }
+          36.3636363636% { transform: translate(26px, 0); }
+          45.4545454545% { transform: translate(26px, 0); }
+          54.5454545455% { transform: translate(26px, 0); }
+          63.6363636364% { transform: translate(26px, 0); }
+          72.7272727273% { transform: translate(26px, 0); }
+          81.8181818182% { transform: translate(26px, -26px); }
+          90.9090909091% { transform: translate(0px, -26px); }
+          100% { transform: translate(0px, 0px); }
+        }
+
+        .banter-loader__box:nth-child(5) {
+          animation: moveBox-5 4s infinite;
+        }
+        
+        .banter-loader--inactive .banter-loader__box:nth-child(5) {
+          animation: none;
+        }
+
+        @keyframes moveBox-6 {
+          9.0909090909% { transform: translate(0, 0); }
+          18.1818181818% { transform: translate(-26px, 0); }
+          27.2727272727% { transform: translate(-26px, 0); }
+          36.3636363636% { transform: translate(0px, 0); }
+          45.4545454545% { transform: translate(0px, 0); }
+          54.5454545455% { transform: translate(0px, 0); }
+          63.6363636364% { transform: translate(0px, 0); }
+          72.7272727273% { transform: translate(0px, 26px); }
+          81.8181818182% { transform: translate(-26px, 26px); }
+          90.9090909091% { transform: translate(-26px, 0px); }
+          100% { transform: translate(0px, 0px); }
+        }
+
+        .banter-loader__box:nth-child(6) {
+          animation: moveBox-6 4s infinite;
+        }
+        
+        .banter-loader--inactive .banter-loader__box:nth-child(6) {
+          animation: none;
+        }
+
+        @keyframes moveBox-7 {
+          9.0909090909% { transform: translate(26px, 0); }
+          18.1818181818% { transform: translate(26px, 0); }
+          27.2727272727% { transform: translate(26px, 0); }
+          36.3636363636% { transform: translate(0px, 0); }
+          45.4545454545% { transform: translate(0px, -26px); }
+          54.5454545455% { transform: translate(26px, -26px); }
+          63.6363636364% { transform: translate(0px, -26px); }
+          72.7272727273% { transform: translate(0px, -26px); }
+          81.8181818182% { transform: translate(0px, 0px); }
+          90.9090909091% { transform: translate(26px, 0px); }
+          100% { transform: translate(0px, 0px); }
+        }
+
+        .banter-loader__box:nth-child(7) {
+          animation: moveBox-7 4s infinite;
+        }
+        
+        .banter-loader--inactive .banter-loader__box:nth-child(7) {
+          animation: none;
+        }
+
+        @keyframes moveBox-8 {
+          9.0909090909% { transform: translate(0, 0); }
+          18.1818181818% { transform: translate(-26px, 0); }
+          27.2727272727% { transform: translate(-26px, -26px); }
+          36.3636363636% { transform: translate(0px, -26px); }
+          45.4545454545% { transform: translate(0px, -26px); }
+          54.5454545455% { transform: translate(0px, -26px); }
+          63.6363636364% { transform: translate(0px, -26px); }
+          72.7272727273% { transform: translate(0px, -26px); }
+          81.8181818182% { transform: translate(26px, -26px); }
+          90.9090909091% { transform: translate(26px, 0px); }
+          100% { transform: translate(0px, 0px); }
+        }
+
+        .banter-loader__box:nth-child(8) {
+          animation: moveBox-8 4s infinite;
+        }
+        
+        .banter-loader--inactive .banter-loader__box:nth-child(8) {
+          animation: none;
+        }
+
+        @keyframes moveBox-9 {
+          9.0909090909% { transform: translate(-26px, 0); }
+          18.1818181818% { transform: translate(-26px, 0); }
+          27.2727272727% { transform: translate(0px, 0); }
+          36.3636363636% { transform: translate(-26px, 0); }
+          45.4545454545% { transform: translate(0px, 0); }
+          54.5454545455% { transform: translate(0px, 0); }
+          63.6363636364% { transform: translate(-26px, 0); }
+          72.7272727273% { transform: translate(-26px, 0); }
+          81.8181818182% { transform: translate(-52px, 0); }
+          90.9090909091% { transform: translate(-26px, 0); }
+          100% { transform: translate(0px, 0); }
+        }
+
+        .banter-loader__box:nth-child(9) {
+          animation: moveBox-9 4s infinite;
+        }
+        
+        .banter-loader--inactive .banter-loader__box:nth-child(9) {
+          animation: none;
         }
       `}</style>
     </div>
@@ -661,7 +1048,7 @@ export default function RobotDashboard() {
 function StatusPanel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="bg-[#181818] p-6 rounded-lg shadow-md mb-6 w-full min-w-[300px]">
-      <h3 className="text-4xl font-bold text-[#ff4d4d] mb-6 uppercase">{title}</h3>
+      {title && <h3 className="text-4xl font-bold text-[#ff4d4d] mb-6 uppercase">{title}</h3>}
       <div>{children}</div>
     </div>
   );
