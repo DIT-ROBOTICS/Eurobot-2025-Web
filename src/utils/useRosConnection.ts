@@ -108,8 +108,11 @@ export function useRosConnection() {
     // Increment the subscriber count
     rosSubscribers++;
     
-    // Connect to ROS
-    connectToROS();
+    // Connect to ROS with an initial delay to ensure the service is ready
+    const initialDelay = 2000; // 2 seconds delay before first connection attempt
+    const initialConnectTimer = setTimeout(() => {
+      connectToROS();
+    }, initialDelay);
 
     // Cleanup function
     return () => {
@@ -118,6 +121,10 @@ export function useRosConnection() {
       
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
+      }
+
+      if (initialConnectTimer) {
+        clearTimeout(initialConnectTimer);
       }
       
       // Only close the connection if no components are using it

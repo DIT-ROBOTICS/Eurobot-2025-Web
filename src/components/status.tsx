@@ -39,6 +39,12 @@ export default function RobotDashboard() {
     esp32: false,
     imu: false
   });
+  const [rivalRadius, setRivalRadius] = useState(22); // Default rival radius in cm
+  const [updateStatus, setUpdateStatus] = useState<{ 
+    message: string; 
+    isError: boolean; 
+    visible: boolean 
+  }>({ message: '', isError: false, visible: false });
 
   // Define the type for device status
   type DeviceStatusType = typeof deviceStatus;
@@ -62,7 +68,7 @@ export default function RobotDashboard() {
           console.warn('Could not detect half screen mode:', error);
         }
       };
-      
+
       // Add event listener for storage events
       window.addEventListener('storage', checkHalfScreen);
       document.addEventListener('visibilitychange', checkHalfScreen);
@@ -86,7 +92,7 @@ export default function RobotDashboard() {
       return;
     }
 
-    // Subscribe to battery voltage topic
+      // Subscribe to battery voltage topic
     const batteryTopic = getTopicHandler('/robot_status/battery_voltage', 'std_msgs/msg/Float32');
     if (batteryTopic) {
       batteryTopic.subscribe((message: any) => {
@@ -97,18 +103,18 @@ export default function RobotDashboard() {
       });
     }
 
-    // Subscribe to device status topics
-    const deviceTopicNames = {
-      chassis: '/robot_status/usb/chassis',
-      mission: '/robot_status/usb/mission',
-      lidar: '/robot_status/usb/lidar',
-      esp32: '/robot_status/usb/esp',
-      imu: '/robot_status/usb/imu'
-    };
+      // Subscribe to device status topics
+      const deviceTopicNames = {
+        chassis: '/robot_status/usb/chassis',
+        mission: '/robot_status/usb/mission',
+        lidar: '/robot_status/usb/lidar',
+        esp32: '/robot_status/usb/esp',
+        imu: '/robot_status/usb/imu'
+      };
 
-    // Create topics and subscribe
+      // Create topics and subscribe
     const deviceTopics: Record<string, any> = {};
-    Object.entries(deviceTopicNames).forEach(([device, topicName]) => {
+      Object.entries(deviceTopicNames).forEach(([device, topicName]) => {
       const topic = getTopicHandler(topicName, 'std_msgs/msg/Bool');
       if (topic) {
         topic.subscribe((message: any) => {
@@ -134,7 +140,7 @@ export default function RobotDashboard() {
           setPlugConnected(false);
         }
       });
-    }
+      }
 
     // Cleanup function
     return () => {
@@ -334,6 +340,94 @@ export default function RobotDashboard() {
     // Clean up on unmount
     return () => clearInterval(intervalId);
   }, []);
+
+  // Fetch current rival radius from backend on component mount
+  useEffect(() => {
+    const fetchRivalRadius = async () => {
+      try {
+        const response = await fetch('/api/rival-radius');
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        if (data.success && data.radius) {
+          // Convert from meters to centimeters
+          setRivalRadius(data.radius * 100);
+        }
+      } catch (error) {
+        console.error("Error fetching rival radius:", error);
+        // Keep using default value on error
+      }
+    };
+    
+    fetchRivalRadius();
+  }, []); // Empty dependency array means this runs once on mount
+
+  // Function to update rival radius
+  const handleUpdateRivalRadius = async (newRadius: number) => {
+    try {
+      setUpdateStatus({ message: 'Updating...', isError: false, visible: true });
+      
+      // Convert from cm to m for storage
+      const radiusM = newRadius / 100;
+      console.log(`Sending radius update request: ${radiusM}m`);
+      
+      // Direct file update via API
+      const response = await fetch('/api/rival-radius', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ radius: radiusM }),
+      });
+      
+      // Check if the response is OK
+      if (!response.ok) {
+        // Try to parse error response
+        let errorMessage = 'Failed to update radius';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.message || errorMessage;
+        } catch (parseError) {
+          errorMessage = `Network error (${response.status}): ${response.statusText}`;
+          console.error('Failed to parse error response:', parseError);
+        }
+        throw new Error(errorMessage);
+      }
+      
+      // Parse success response
+      const jsonResponse = await response.json();
+      console.log('Update response:', jsonResponse);
+      
+      // Set success message
+      setUpdateStatus({ 
+        message: `Radius updated to ${Math.round(jsonResponse.radius * 100)}cm!`, 
+        isError: false, 
+        visible: true 
+      });
+      
+      // Hide the status message after 3 seconds
+      setTimeout(() => {
+        setUpdateStatus((prev) => ({ ...prev, visible: false }));
+      }, 3000);
+      
+    } catch (error) {
+      console.error("Error updating rival radius:", error);
+      setUpdateStatus({ 
+        message: error instanceof Error ? error.message : 'Error updating radius', 
+        isError: true, 
+        visible: true 
+      });
+      
+      // Hide error message after 3 seconds
+      setTimeout(() => {
+        setUpdateStatus((prev) => ({ ...prev, visible: false }));
+      }, 3000);
+    }
+  };
 
   return (
     <div className="h-full w-full bg-[#0e0e0e] p-6 overflow-y-auto">
@@ -540,6 +634,47 @@ export default function RobotDashboard() {
               </div>
             </div>
           </StatusPanel>
+
+          {/* Rival Robot Parameters Panel */}
+          <StatusPanel title="Rival Parameters">
+            <div className="flex flex-col space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="text-[#e0e0e0] text-xl">Rival Robot Radius:</div>
+                <div className="text-white text-xl font-bold">{rivalRadius} cm</div>
+              </div>
+              
+              <div className="flex flex-col space-y-2">
+                <input
+                  type="range"
+                  min="0"
+                  max="50"
+                  step="1"
+                  value={rivalRadius}
+                  onChange={(e) => setRivalRadius(parseInt(e.target.value))}
+                  className="w-full h-3 bg-[#333] rounded-lg appearance-none cursor-pointer"
+                />
+                
+                <div className="flex justify-between text-[#999] text-sm">
+                  <span>0 cm</span>
+                  <span>25 cm</span>
+                  <span>50 cm</span>
+                </div>
+              </div>
+              
+              {updateStatus.visible && (
+                <div className={`text-center py-2 rounded-md text-lg ${updateStatus.isError ? 'bg-[#3a0909] text-[#ff6b6b]' : 'bg-[#0a2e0a] text-[#6bff6b]'}`}>
+                  {updateStatus.message}
+                </div>
+              )}
+              
+              <button
+                onClick={() => handleUpdateRivalRadius(rivalRadius)}
+                className="bg-[#d32f2f] text-white text-xl font-bold py-3 px-5 rounded-md w-full block text-center uppercase tracking-wider hover:bg-[#ff4d4d] transition-colors duration-300 mt-4"
+              >
+                UPDATE RADIUS
+              </button>
+            </div>
+          </StatusPanel>
         </div>
       </div>
 
@@ -624,7 +759,10 @@ export default function RobotDashboard() {
         )}
       </div>
 
-      <style jsx global>{`
+      {/* Add extra bottom space to prevent content from being hidden behind fixed elements */}
+      <div className="h-32 md:h-40 w-full"></div>
+
+      <style jsx={true} global={true}>{`
         ::-webkit-scrollbar {
           display: none;
         }
@@ -780,8 +918,8 @@ export default function RobotDashboard() {
           54.5454545455% { transform: translate(0px, -26px); }
           63.6363636364% { transform: translate(0px, -26px); }
           72.7272727273% { transform: translate(0px, -26px); }
-          81.8181818182% { transform: translate(-26px, -26px); }
-          90.9090909091% { transform: translate(-26px, 0px); }
+          81.8181818182% { transform: translate(26px, -26px); }
+          90.9090909091% { transform: translate(26px, 0px); }
           100% { transform: translate(0px, 0px); }
         }
 

@@ -1,11 +1,21 @@
 import playmatImage from "../assets/playmat_2025_FINAL.png";
 import { useState, useEffect } from "react";
 import { useRosConnection } from "../utils/useRosConnection";
+import { getButtonStates, updateButtonStates, resetButtonStates } from "../api/fileOperations";
 
 export default function Playmat() {
   const [estimatedScore, setEstimatedScore] = useState(320);
   const [isHalfScreen, setIsHalfScreen] = useState(false);
   const { connected, getTopicHandler } = useRosConnection();
+  // For storing button states
+  const [toggleStates, setToggleStates] = useState<Record<number, boolean>>(
+    Object.fromEntries([...Array(20).keys()].map(num => [num, false]))
+  );
+  // Loading state
+  const [isLoading, setIsLoading] = useState(true);
+  // Long press reset state
+  const [pressTimer, setPressTimer] = useState<any>(null);
+  const [pressProgress, setPressProgress] = useState(0);
   
   // Detect half-screen mode
   useEffect(() => {
@@ -28,6 +38,23 @@ export default function Playmat() {
     
     window.addEventListener('storage', checkHalfScreen);
     return () => window.removeEventListener('storage', checkHalfScreen);
+  }, []);
+
+  // Load initial button states from server
+  useEffect(() => {
+    const fetchButtonStates = async () => {
+      setIsLoading(true);
+      try {
+        const states = await getButtonStates();
+        setToggleStates(states);
+      } catch (error) {
+        console.error("Error loading button states:", error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    
+    fetchButtonStates();
   }, []);
 
   // Subscribe to score topic from ROS
@@ -59,17 +86,34 @@ export default function Playmat() {
     }
   }, [connected, getTopicHandler]);
   
-  // Use numeric codes (0-19) as button states
-  const [toggleStates, setToggleStates] = useState(
-    Object.fromEntries([...Array(20).keys()].map(num => [num, false]))
-  );
-
   // Function to toggle button state
   const toggleButton = (button: keyof typeof toggleStates) => {
-    setToggleStates(prev => ({
-      ...prev,
-      [button]: !prev[button]
-    }));
+    const newStates = {
+      ...toggleStates,
+      [button]: !toggleStates[button]
+    };
+    
+    setToggleStates(newStates);
+    
+    // Save the updated states to the server
+    updateButtonStates(newStates).catch(error => {
+      console.error("Error saving button states:", error);
+    });
+  };
+
+  // Function to reset all buttons
+  const handleResetButtons = async () => {
+    try {
+      setIsLoading(true);
+      await resetButtonStates();
+      // Update local state after successful reset
+      setToggleStates(Object.fromEntries([...Array(20).keys()].map(num => [num, false])));
+      // Show temporary feedback that reset happened (could add a flash effect here)
+    } catch (error) {
+      console.error("Error resetting button states:", error);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // Set base button sizes
@@ -108,6 +152,7 @@ export default function Playmat() {
             toggleStates[0] ? "bg-[#104364] text-white shadow-md" : "bg-[#121212] text-[#30a0d1] border-2 border-[#30a0d1]"
           } transition-all duration-200`}
           onClick={() => toggleButton(0)}
+          disabled={isLoading}
         >
           <span className={`${fontSize.large} font-bold`}>0</span>
         </button>
@@ -118,6 +163,7 @@ export default function Playmat() {
             toggleStates[1] ? "bg-[#2a2a2a] text-white shadow-md" : "bg-[#121212] text-[#999999] border-2 border-[#444444]"
           } transition-all duration-200`}
           onClick={() => toggleButton(1)}
+          disabled={isLoading}
         >
           <span className={`${fontSize.large} font-bold`}>1</span>
         </button>
@@ -128,6 +174,7 @@ export default function Playmat() {
             toggleStates[2] ? "bg-[#2a2a2a] text-white shadow-md" : "bg-[#121212] text-[#999999] border-2 border-[#444444]"
           } transition-all duration-200`}
           onClick={() => toggleButton(2)}
+          disabled={isLoading}
         >
           <span className={`${fontSize.large} font-bold`}>2</span>
         </button>
@@ -138,6 +185,7 @@ export default function Playmat() {
             toggleStates[3] ? "bg-[#2a2a2a] text-white shadow-md" : "bg-[#121212] text-[#999999] border-2 border-[#444444]"
           } transition-all duration-200`}
           onClick={() => toggleButton(3)}
+          disabled={isLoading}
         >
           <span className={`${fontSize.large} font-bold`}>3</span>
         </button>
@@ -148,6 +196,7 @@ export default function Playmat() {
             toggleStates[4] ? "bg-[#2a2a2a] text-white shadow-md" : "bg-[#121212] text-[#999999] border-2 border-[#444444]"
           } transition-all duration-200`}
           onClick={() => toggleButton(4)}
+          disabled={isLoading}
         >
           <span className={`${fontSize.large} font-bold`}>4</span>
         </button>
@@ -158,6 +207,7 @@ export default function Playmat() {
             toggleStates[5] ? "bg-[#2a2a2a] text-white shadow-md" : "bg-[#121212] text-[#999999] border-2 border-[#444444]"
           } transition-all duration-200`}
           onClick={() => toggleButton(5)}
+          disabled={isLoading}
         >
           <span className={`${fontSize.large} font-bold`}>5</span>
         </button>
@@ -168,6 +218,7 @@ export default function Playmat() {
             toggleStates[6] ? "bg-[#2a2a2a] text-white shadow-md" : "bg-[#121212] text-[#999999] border-2 border-[#444444]"
           } transition-all duration-200`}
           onClick={() => toggleButton(6)}
+          disabled={isLoading}
         >
           <span className={`${fontSize.large} font-bold`}>6</span>
         </button>
@@ -178,6 +229,7 @@ export default function Playmat() {
             toggleStates[7] ? "bg-[#2a2a2a] text-white shadow-md" : "bg-[#121212] text-[#999999] border-2 border-[#444444]"
           } transition-all duration-200`}
           onClick={() => toggleButton(7)}
+          disabled={isLoading}
         >
           <span className={`${fontSize.large} font-bold`}>7</span>
         </button>
@@ -188,6 +240,7 @@ export default function Playmat() {
             toggleStates[8] ? "bg-[#2a2a2a] text-white shadow-md" : "bg-[#121212] text-[#999999] border-2 border-[#444444]"
           } transition-all duration-200`}
           onClick={() => toggleButton(8)}
+          disabled={isLoading}
         >
           <span className={`${fontSize.large} font-bold`}>8</span>
         </button>
@@ -198,6 +251,7 @@ export default function Playmat() {
             toggleStates[9] ? "bg-[#7f6320] text-white shadow-md" : "bg-[#121212] text-[#e3b341] border-2 border-[#e3b341]"
           } transition-all duration-200`}
           onClick={() => toggleButton(9)}
+          disabled={isLoading}
         >
           <span className={`${fontSize.large} font-bold`}>9</span>
         </button>
@@ -209,6 +263,7 @@ export default function Playmat() {
             toggleStates[10] ? "bg-[#7f6320] text-white shadow-md" : "bg-[#121212] text-[#e3b341] border-2 border-[#e3b341]"
           } transition-all duration-200`}
           onClick={() => toggleButton(10)}
+          disabled={isLoading}
         >
           <span className={`${fontSize.medium} font-bold`}>10</span>
         </button>
@@ -219,6 +274,7 @@ export default function Playmat() {
             toggleStates[11] ? "bg-[#7f6320] text-white shadow-md" : "bg-[#121212] text-[#e3b341] border-2 border-[#e3b341]"
           } transition-all duration-200`}
           onClick={() => toggleButton(11)}
+          disabled={isLoading}
         >
           <span className={`${fontSize.medium} font-bold`}>11</span>
         </button>
@@ -229,6 +285,7 @@ export default function Playmat() {
             toggleStates[12] ? "bg-[#7f6320] text-white shadow-md" : "bg-[#121212] text-[#e3b341] border-2 border-[#e3b341]"
           } transition-all duration-200`}
           onClick={() => toggleButton(12)}
+          disabled={isLoading}
         >
           <span className={`${fontSize.medium} font-bold`}>12</span>
         </button>
@@ -239,6 +296,7 @@ export default function Playmat() {
             toggleStates[13] ? "bg-[#7f6320] text-white shadow-md" : "bg-[#121212] text-[#e3b341] border-2 border-[#e3b341]"
           } transition-all duration-200`}
           onClick={() => toggleButton(13)}
+          disabled={isLoading}
         >
           <span className={`${fontSize.medium} font-bold`}>13</span>
         </button>
@@ -249,6 +307,7 @@ export default function Playmat() {
             toggleStates[14] ? "bg-[#7f6320] text-white shadow-md" : "bg-[#121212] text-[#e3b341] border-2 border-[#e3b341]"
           } transition-all duration-200`}
           onClick={() => toggleButton(14)}
+          disabled={isLoading}
         >
           <span className={`${fontSize.medium} font-bold`}>14</span>
         </button>
@@ -259,6 +318,7 @@ export default function Playmat() {
             toggleStates[15] ? "bg-[#104364] text-white shadow-md" : "bg-[#121212] text-[#30a0d1] border-2 border-[#30a0d1]"
           } transition-all duration-200`}
           onClick={() => toggleButton(15)}
+          disabled={isLoading}
         >
           <span className={`${fontSize.medium} font-bold`}>15</span>
         </button>
@@ -269,6 +329,7 @@ export default function Playmat() {
             toggleStates[16] ? "bg-[#104364] text-white shadow-md" : "bg-[#121212] text-[#30a0d1] border-2 border-[#30a0d1]"
           } transition-all duration-200`}
           onClick={() => toggleButton(16)}
+          disabled={isLoading}
         >
           <span className={`${fontSize.medium} font-bold`}>16</span>
         </button>
@@ -279,6 +340,7 @@ export default function Playmat() {
             toggleStates[17] ? "bg-[#104364] text-white shadow-md" : "bg-[#121212] text-[#30a0d1] border-2 border-[#30a0d1]"
           } transition-all duration-200`}
           onClick={() => toggleButton(17)}
+          disabled={isLoading}
         >
           <span className={`${fontSize.medium} font-bold`}>17</span>
         </button>
@@ -289,6 +351,7 @@ export default function Playmat() {
             toggleStates[18] ? "bg-[#104364] text-white shadow-md" : "bg-[#121212] text-[#30a0d1] border-2 border-[#30a0d1]"
           } transition-all duration-200`}
           onClick={() => toggleButton(18)}
+          disabled={isLoading}
         >
           <span className={`${fontSize.medium} font-bold`}>18</span>
         </button>
@@ -299,6 +362,7 @@ export default function Playmat() {
             toggleStates[19] ? "bg-[#104364] text-white shadow-md" : "bg-[#121212] text-[#30a0d1] border-2 border-[#30a0d1]"
           } transition-all duration-200`}
           onClick={() => toggleButton(19)}
+          disabled={isLoading}
         >
           <span className={`${fontSize.medium} font-bold`}>19</span>
         </button>
@@ -320,6 +384,85 @@ export default function Playmat() {
         <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-black bg-opacity-15 px-12 py-8 rounded-xl border-0 shadow-lg min-w-[400px] backdrop-blur-lg">
           <div className="text-[#ff4d4d] text-3xl uppercase tracking-wider mb-5 text-center font-bold text-shadow-lg">Estimated Score</div>
           <div className="text-white text-9xl font-bold text-center tracking-wider text-shadow-lg drop-shadow-lg">{estimatedScore}</div>
+        </div>
+
+        {/* Reset button - positioned at top-middle */}
+        <div
+          className={`absolute ${isHalfScreen ? 'top-32' : 'top-24'} left-1/2 transform -translate-x-1/2 z-50 flex items-center gap-8 bg-black/70 backdrop-blur-md rounded-2xl px-8 py-5 border-2 border-[#444] shadow-2xl transition-all duration-300 hover:bg-black/80 cursor-pointer select-none`}
+          onMouseDown={() => {
+            // Start long-press timer
+            const timer = setInterval(() => {
+              setPressProgress(prev => {
+                const newProgress = prev + (100/10); // Complete in 1 second (10×100ms)
+                if (newProgress >= 100) {
+                  // Reset all buttons
+                  handleResetButtons();
+                  clearInterval(timer);
+                  return 0;
+                }
+                return newProgress;
+              });
+            }, 100);
+            setPressTimer(timer);
+          }}
+          onMouseUp={() => {
+            // Cancel long-press
+            if (pressTimer) {
+              clearInterval(pressTimer);
+              setPressTimer(null);
+              setPressProgress(0);
+            }
+          }}
+          onMouseLeave={() => {
+            // Also cancel on mouse leave
+            if (pressTimer) {
+              clearInterval(pressTimer);
+              setPressTimer(null);
+              setPressProgress(0);
+            }
+          }}
+          onTouchStart={() => {
+            // Start long-press timer (touch screen)
+            const timer = setInterval(() => {
+              setPressProgress(prev => {
+                const newProgress = prev + (100/10); // Complete in 1 second
+                if (newProgress >= 100) {
+                  // Reset all buttons
+                  handleResetButtons();
+                  clearInterval(timer);
+                  return 0;
+                }
+                return newProgress;
+              });
+            }, 100);
+            setPressTimer(timer);
+          }}
+          onTouchEnd={() => {
+            // Cancel long-press (touch screen)
+            if (pressTimer) {
+              clearInterval(pressTimer);
+              setPressTimer(null);
+              setPressProgress(0);
+            }
+          }}
+        >
+          <div className="relative">
+            <div className="w-8 h-8 rounded-full bg-[#d32f2f]"></div>
+            <div className="absolute inset-0 w-8 h-8 rounded-full bg-[#d32f2f] animate-ping opacity-75"></div>
+          </div>
+          <div className="flex flex-col">
+            <div className="text-white text-2xl font-mono font-bold leading-tight">
+              Reset Buttons
+            </div>
+            <div className="text-xl font-mono text-[#ff4d4d]">
+              Press to reset
+            </div>
+          </div>
+          
+          {/* Long-press progress indicator */}
+          {pressProgress > 0 && (
+            <div className="absolute bottom-0 left-0 h-1 bg-[#ff4d4d] rounded-b-xl" style={{ width: `${pressProgress}%` }}></div>
+          )}
         </div>
 
         {/* CSS for text shadow */}
