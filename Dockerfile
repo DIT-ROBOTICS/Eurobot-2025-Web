@@ -9,6 +9,8 @@ ENV NODE_OPTIONS="--max-old-space-size=4096"
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-dev \
     libxi-dev \
+    nginx \
+    curl \
     --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
@@ -34,18 +36,56 @@ ENV TS_NODE_TRANSPILE_ONLY=true
 # Ignore TypeScript errors, force build to continue
 RUN sed -i 's/"tsc -b && vite build"/"vite build"/g' package.json && bun run build
 
-# Production stage (Nginx server)
-FROM nginx:1.25-alpine AS production
+# Production stage with both API server and Nginx
+FROM oven/bun:1 AS production
+WORKDIR /app
 
-# Copy build artifacts
+# Install Nginx and other necessary packages
+RUN apt-get update && apt-get install -y \
+    nginx \
+    curl \
+    supervisor \
+    --no-install-recommends \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy build artifacts and source code
 COPY --from=bun-build /app/dist /usr/share/nginx/html
 COPY --from=bun-build /app/public/assets /usr/share/nginx/html/assets
+COPY --from=bun-build /app/node_modules /app/node_modules
+COPY --from=bun-build /app/src /app/src
+COPY --from=bun-build /app/package.json /app/
 
 # Configure Nginx
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+RUN rm /etc/nginx/sites-enabled/default || true
 
-# Expose port
-EXPOSE 3000
+# Create supervisor configuration
+RUN mkdir -p /var/log/supervisor
+RUN echo '[supervisord]' > /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'nodaemon=true' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'logfile=/var/log/supervisor/supervisord.log' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'logfile_maxbytes=50MB' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'logfile_backups=10' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo '' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo '[program:nginx]' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'command=/usr/sbin/nginx -g "daemon off;"' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'autostart=true' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'autorestart=true' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'stdout_logfile=/var/log/supervisor/nginx_stdout.log' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'stderr_logfile=/var/log/supervisor/nginx_stderr.log' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo '' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo '[program:api-server]' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'command=bun run src/server.js' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'directory=/app' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'environment=NODE_ENV=production,API_SERVER_PORT=3001' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'autostart=true' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'autorestart=true' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'stdout_logfile=/var/log/supervisor/api_stdout.log' >> /etc/supervisor/conf.d/supervisord.conf && \
+    echo 'stderr_logfile=/var/log/supervisor/api_stderr.log' >> /etc/supervisor/conf.d/supervisord.conf
 
-# Start Nginx
-CMD ["nginx", "-g", "daemon off;"]
+# Expose ports
+EXPOSE 3000 3001
+
+# Start services using supervisor
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
