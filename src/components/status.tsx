@@ -45,6 +45,17 @@ export default function RobotDashboard() {
     isError: boolean; 
     visible: boolean 
   }>({ message: '', isError: false, visible: false });
+  const [dockRivalRadius, setDockRivalRadius] = useState(46); // Default dock rival radius in cm
+  const [dockRivalDegree, setDockRivalDegree] = useState(120); // Default dock rival degree
+  const [navLinearVelocity, setNavLinearVelocity] = useState(1.1); // Default linear velocity
+  const [navAngularVelocity, setNavAngularVelocity] = useState(2.0); // Default angular velocity
+  const [navProfile, setNavProfile] = useState("slow"); // Default navigation profile
+  const [simaStartOffset, setSimaStartOffset] = useState(85); // Default SIMA start time offset
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false); // For confirmation dialog
+  const [paramsToUpdate, setParamsToUpdate] = useState<string | null>(null); // Which parameters to update
+  const [buttonPressTimer, setButtonPressTimer] = useState<any>(null);
+  const [buttonPressProgress, setButtonPressProgress] = useState(0);
+  const [activeButton, setActiveButton] = useState<string | null>(null);
 
   // Define the type for device status
   type DeviceStatusType = typeof deviceStatus;
@@ -346,6 +357,27 @@ export default function RobotDashboard() {
     const fetchRivalRadius = async () => {
       try {
         const response = await fetch('/api/rival-radius');
+        const data = await response.json();
+        
+        if (data.success) {
+          // Ensure radius is displayed with consistent decimal places
+          // Convert from meters to centimeters for display
+          const radiusCm = parseFloat(data.radius) * 100;
+          setRivalRadius(radiusCm);
+        }
+      } catch (error) {
+        console.error('Error fetching rival radius:', error);
+      }
+    };
+    
+    fetchRivalRadius();
+  }, []); // Empty dependency array means this runs once on mount
+  
+  // Fetch dock rival parameters
+  useEffect(() => {
+    const fetchDockRivalParams = async () => {
+      try {
+        const response = await fetch('/api/dock-rival-params');
         
         if (!response.ok) {
           throw new Error(`HTTP error ${response.status}`);
@@ -353,46 +385,229 @@ export default function RobotDashboard() {
         
         const data = await response.json();
         
-        if (data.success && data.radius) {
-          // Convert from meters to centimeters
-          setRivalRadius(data.radius * 100);
+        if (data.success) {
+          // Convert radius from meters to centimeters
+          if (data.radius) setDockRivalRadius(data.radius * 100);
+          if (data.degree) setDockRivalDegree(data.degree);
         }
       } catch (error) {
-        console.error("Error fetching rival radius:", error);
+        console.error("Error fetching dock rival parameters:", error);
+        // Keep using default values on error
+      }
+    };
+    
+    fetchDockRivalParams();
+  }, []);
+  
+  // Fetch navigation parameters
+  useEffect(() => {
+    const fetchNavParams = async () => {
+      try {
+        const response = await fetch(`/api/nav-params?profile=${navProfile}`);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        if (data.success) {
+          if (data.linearVelocity) setNavLinearVelocity(data.linearVelocity);
+          if (data.angularVelocity) setNavAngularVelocity(data.angularVelocity);
+        }
+      } catch (error) {
+        console.error("Error fetching navigation parameters:", error);
+        // Keep using default values on error
+      }
+    };
+    
+    fetchNavParams();
+  }, [navProfile]);
+  
+  // Fetch SIMA start offset
+  useEffect(() => {
+    const fetchSimaStartOffset = async () => {
+      try {
+        const response = await fetch('/api/sima-start-offset');
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        if (data.success && data.offset !== undefined) {
+          setSimaStartOffset(data.offset);
+        }
+      } catch (error) {
+        console.error("Error fetching SIMA start offset:", error);
         // Keep using default value on error
       }
     };
     
-    fetchRivalRadius();
-  }, []); // Empty dependency array means this runs once on mount
+    fetchSimaStartOffset();
+  }, []);
 
   // Function to update rival radius
   const handleUpdateRivalRadius = async (newRadius: number) => {
     try {
-      setUpdateStatus({ message: 'Updating...', isError: false, visible: true });
+      // Format to ensure consistent decimal places
+      // Convert from cm to meters for API
+      const radiusInMeters = (newRadius / 100).toFixed(2);
       
-      // Convert from cm to m for storage
-      const radiusM = newRadius / 100;
-      console.log(`Sending radius update request: ${radiusM}m`);
-      
-      // Direct file update via API
       const response = await fetch('/api/rival-radius', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ radius: radiusM }),
+        body: JSON.stringify({ radius: radiusInMeters }),
       });
       
+      // ... rest of the function ...
+    } catch (error) {
+      // ... error handling ...
+    }
+  };
+  
+  // Function to update dock rival parameters
+  const handleUpdateDockRivalParams = async () => {
+    if (buttonPressProgress === 100 && activeButton === 'dock') {
+      setButtonPressProgress(0);
+      setActiveButton(null);
+      await updateParameters('dock');
+    }
+  };
+  
+  // Function to update navigation parameters
+  const handleUpdateNavParams = async () => {
+    if (buttonPressProgress === 100 && activeButton === 'nav') {
+      setButtonPressProgress(0);
+      setActiveButton(null);
+      await updateParameters('nav');
+    }
+  };
+  
+  // Function to update SIMA start offset
+  const handleUpdateSimaStartOffset = async () => {
+    if (buttonPressProgress === 100 && activeButton === 'sima') {
+      setButtonPressProgress(0);
+      setActiveButton(null);
+      await updateParameters('sima');
+    }
+  };
+  
+  // Start long press timer for button
+  const startLongPress = (buttonType: string) => {
+    setActiveButton(buttonType);
+    
+    const timer = setInterval(() => {
+      setButtonPressProgress((prev: number) => {
+        const newProgress = prev + (100/20); // Complete in 2 seconds (20×100ms)
+        if (newProgress >= 100) {
+          clearInterval(timer);
+          // Will trigger the appropriate update function on release
+          return 100;
+        }
+        return newProgress;
+      });
+    }, 100);
+    
+    setButtonPressTimer(timer);
+  };
+  
+  // Cancel long press
+  const cancelLongPress = () => {
+    if (buttonPressTimer) {
+      clearInterval(buttonPressTimer);
+      setButtonPressTimer(null);
+      
+      // If we reached 100%, trigger the appropriate update function
+      if (buttonPressProgress === 100) {
+        if (activeButton === 'rival') handleUpdateRivalRadius(rivalRadius);
+        else if (activeButton === 'dock') handleUpdateDockRivalParams();
+        else if (activeButton === 'nav') handleUpdateNavParams();
+        else if (activeButton === 'sima') handleUpdateSimaStartOffset();
+        else if (activeButton === 'reset') resetToDefaults();
+      }
+      
+      setButtonPressProgress(0);
+    }
+  };
+  
+  // Function to execute update based on parameter type
+  const updateParameters = async (paramType: string) => {
+    setUpdateStatus({ message: 'Updating...', isError: false, visible: true });
+    
+    try {
+      let response;
+      
+      if (paramType === 'rival') {
+        // Convert from cm to m for storage
+        const radiusM = rivalRadius / 100;
+        console.log(`Sending radius update request: ${radiusM}m`);
+        
+        // Direct file update via API
+        response = await fetch('/api/rival-radius', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ radius: radiusM }),
+        });
+      } 
+      else if (paramType === 'dock') {
+        const radiusM = dockRivalRadius / 100;
+        console.log(`Sending dock rival params update: radius=${radiusM}m, degree=${dockRivalDegree}`);
+        
+        response = await fetch('/api/dock-rival-params', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ 
+            radius: radiusM, 
+            degree: dockRivalDegree 
+          }),
+        });
+      }
+      else if (paramType === 'nav') {
+        console.log(`Sending navigation params update: profile=${navProfile}, linear=${navLinearVelocity}, angular=${navAngularVelocity}`);
+        
+        response = await fetch('/api/nav-params', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ 
+            profile: navProfile,
+            linearVelocity: navLinearVelocity, 
+            angularVelocity: navAngularVelocity 
+          }),
+        });
+      }
+      else if (paramType === 'sima') {
+        console.log(`Sending SIMA start offset update: ${simaStartOffset}`);
+        
+        response = await fetch('/api/sima-start-offset', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ offset: simaStartOffset }),
+        });
+      }
+      
       // Check if the response is OK
-      if (!response.ok) {
+      if (!response || !response.ok) {
         // Try to parse error response
-        let errorMessage = 'Failed to update radius';
+        let errorMessage = 'Failed to update parameters';
         try {
-          const errorData = await response.json();
-          errorMessage = errorData.message || errorMessage;
+          if (response) {
+            const errorData = await response.json();
+            errorMessage = errorData.message || errorMessage;
+          }
         } catch (parseError) {
-          errorMessage = `Network error (${response.status}): ${response.statusText}`;
+          errorMessage = response ? `Network error (${response.status}): ${response.statusText}` : 'Network error';
           console.error('Failed to parse error response:', parseError);
         }
         throw new Error(errorMessage);
@@ -403,32 +618,150 @@ export default function RobotDashboard() {
       console.log('Update response:', jsonResponse);
       
       // Set success message
+      let successMessage = 'Parameters updated successfully!';
+      if (paramType === 'rival' && jsonResponse.radius) {
+        successMessage = `Rival radius updated to ${Math.round(jsonResponse.radius * 100)}cm!`;
+      }
+      
       setUpdateStatus({ 
-        message: `Radius updated to ${Math.round(jsonResponse.radius * 100)}cm!`, 
+        message: successMessage, 
         isError: false, 
         visible: true 
       });
       
       // Hide the status message after 3 seconds
       setTimeout(() => {
-        setUpdateStatus((prev) => ({ ...prev, visible: false }));
+        setUpdateStatus((prev: any) => ({ ...prev, visible: false }));
       }, 3000);
       
     } catch (error) {
-      console.error("Error updating rival radius:", error);
+      console.error("Error updating parameters:", error);
       setUpdateStatus({ 
-        message: error instanceof Error ? error.message : 'Error updating radius', 
+        message: error instanceof Error ? error.message : 'Error updating parameters', 
         isError: true, 
         visible: true 
       });
       
       // Hide error message after 3 seconds
       setTimeout(() => {
-        setUpdateStatus((prev) => ({ ...prev, visible: false }));
+        setUpdateStatus((prev: any) => ({ ...prev, visible: false }));
       }, 3000);
     }
   };
+  
+  // Function to handle navigation profile change
+  const handleProfileChange = (profile: string) => {
+    setNavProfile(profile);
+  };
 
+  // Function to reset all parameters to defaults
+  const resetToDefaults = async () => {
+    if (buttonPressProgress === 100 && activeButton === 'reset') {
+      setButtonPressProgress(0);
+      setActiveButton(null);
+      
+      setUpdateStatus({ message: 'Resetting to defaults...', isError: false, visible: true });
+      
+      try {
+        // Use direct API server URL to bypass Vite in case of proxy issues
+        const response = await fetch('/api/reset-to-defaults', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          }
+        });
+        
+        if (!response.ok) {
+          console.error(`Reset API failed with status: ${response.status} ${response.statusText}`);
+          throw new Error(`Failed to reset parameters: ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        console.log('Reset API response:', data);
+        
+        if (data.success) {
+          // Update all state values with defaults from the response
+          if (data.defaults) {
+            // Update rival radius (convert from meters to cm)
+            if (data.defaults.nav_rival_radius) {
+              const radiusValue = typeof data.defaults.nav_rival_radius === 'string' 
+                ? parseFloat(data.defaults.nav_rival_radius) 
+                : data.defaults.nav_rival_radius;
+              setRivalRadius(Math.round(radiusValue * 100));
+            }
+            
+            // Update dock parameters
+            if (data.defaults.dock_rival_radius) {
+              const dockRadiusValue = typeof data.defaults.dock_rival_radius === 'string'
+                ? parseFloat(data.defaults.dock_rival_radius)
+                : data.defaults.dock_rival_radius;
+              setDockRivalRadius(Math.round(dockRadiusValue * 100));
+            }
+            if (data.defaults.dock_rival_degree) {
+              setDockRivalDegree(data.defaults.dock_rival_degree);
+            }
+            
+            // Update SIMA offset
+            if (data.defaults.sima_start_time) {
+              setSimaStartOffset(data.defaults.sima_start_time);
+            }
+            
+            // We don't update navigation parameters here because they're profile-specific
+            // and will be fetched when needed via the useEffect for navProfile
+          }
+          
+          setUpdateStatus({ 
+            message: 'All parameters reset to defaults!', 
+            isError: false, 
+            visible: true 
+          });
+          
+          // Reload navigation parameters for current profile
+          fetchNavParams(navProfile);
+        } else {
+          throw new Error(data.message || 'Failed to reset parameters');
+        }
+        
+        // Hide the status message after 3 seconds
+        setTimeout(() => {
+          setUpdateStatus((prev: any) => ({ ...prev, visible: false }));
+        }, 3000);
+      } catch (error) {
+        console.error("Error resetting parameters:", error);
+        setUpdateStatus({ 
+          message: error instanceof Error ? error.message : 'Error resetting parameters',
+          isError: true, 
+          visible: true 
+        });
+        
+        // Hide error message after 3 seconds
+        setTimeout(() => {
+          setUpdateStatus((prev: any) => ({ ...prev, visible: false }));
+        }, 3000);
+      }
+    }
+  };
+  
+  // Helper function to fetch navigation parameters for a specific profile
+  const fetchNavParams = async (profile: string) => {
+    try {
+      const response = await fetch(`/api/nav-params?profile=${profile}`);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error ${response.status}`);
+      }
+      
+      const data = await response.json();
+      
+      if (data.success) {
+        if (data.linearVelocity) setNavLinearVelocity(parseFloat(data.linearVelocity));
+        if (data.angularVelocity) setNavAngularVelocity(parseFloat(data.angularVelocity));
+      }
+    } catch (error) {
+      console.error("Error fetching navigation parameters:", error);
+    }
+  };
+  
   return (
     <div className="h-full w-full bg-[#0e0e0e] p-6 overflow-y-auto">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -636,14 +969,15 @@ export default function RobotDashboard() {
           </StatusPanel>
 
           {/* Rival Robot Parameters Panel */}
-          <StatusPanel title="Rival Parameters">
+          <StatusPanel title="Robot Parameters">
             <div className="flex flex-col space-y-4">
+              <h3 className="text-xl font-bold text-white">NAV Rival Radius</h3>
               <div className="flex items-center justify-between">
                 <div className="text-[#e0e0e0] text-xl">Rival Robot Radius:</div>
                 <div className="text-white text-xl font-bold">{rivalRadius} cm</div>
               </div>
               
-              <div className="flex flex-col space-y-2">
+                             <div className="flex flex-col space-y-2">
                 <input
                   type="range"
                   min="0"
@@ -661,26 +995,259 @@ export default function RobotDashboard() {
                 </div>
               </div>
               
+              <button
+                className="text-white text-xl font-bold py-3 px-5 rounded-md w-full block text-center uppercase tracking-wider transition-all duration-300 mt-4 relative overflow-hidden"
+                style={{
+                  background: activeButton === 'rival' && buttonPressProgress > 0 
+                    ? `linear-gradient(to right, #4caf50 ${buttonPressProgress}%, #d32f2f ${buttonPressProgress}%)`
+                    : '#d32f2f'
+                }}
+                onMouseDown={() => startLongPress('rival')}
+                onMouseUp={cancelLongPress}
+                onMouseLeave={cancelLongPress}
+                onTouchStart={() => startLongPress('rival')}
+                onTouchEnd={cancelLongPress}
+              >
+                UPDATE RADIUS
+              </button>
+              
+              <h3 className="text-xl font-bold text-white mt-6">Dock Rival Parameters</h3>
+              <div className="flex items-center justify-between">
+                <div className="text-[#e0e0e0] text-xl">Dock Rival Radius:</div>
+                <div className="text-white text-xl font-bold">{dockRivalRadius} cm</div>
+              </div>
+              
+              <div className="flex flex-col space-y-2">
+                <input
+                  type="range"
+                  min="0"
+                  max="50"
+                  step="1"
+                  value={dockRivalRadius}
+                  onChange={(e) => setDockRivalRadius(parseInt(e.target.value))}
+                  className="w-full h-3 bg-[#333] rounded-lg appearance-none cursor-pointer"
+                />
+                
+                <div className="flex justify-between text-[#999] text-sm">
+                  <span>0 cm</span>
+                  <span>25 cm</span>
+                  <span>50 cm</span>
+                </div>
+              </div>
+              
+              <div className="flex items-center justify-between mt-4">
+                <div className="text-[#e0e0e0] text-xl">Dock Rival Degree:</div>
+                <div className="text-white text-xl font-bold">{dockRivalDegree}°</div>
+              </div>
+              
+              <div className="flex flex-col space-y-2">
+                <input
+                  type="range"
+                  min="0"
+                  max="360"
+                  step="5"
+                  value={dockRivalDegree}
+                  onChange={(e) => setDockRivalDegree(parseInt(e.target.value))}
+                  className="w-full h-3 bg-[#333] rounded-lg appearance-none cursor-pointer"
+                />
+                
+                <div className="flex justify-between text-[#999] text-sm">
+                  <span>0°</span>
+                  <span>180°</span>
+                  <span>360°</span>
+                </div>
+              </div>
+              
+              <button
+                className="text-white text-xl font-bold py-3 px-5 rounded-md w-full block text-center uppercase tracking-wider transition-all duration-300 mt-4 relative overflow-hidden"
+                style={{
+                  background: activeButton === 'dock' && buttonPressProgress > 0 
+                    ? `linear-gradient(to right, #4caf50 ${buttonPressProgress}%, #d32f2f ${buttonPressProgress}%)`
+                    : '#d32f2f'
+                }}
+                onMouseDown={() => startLongPress('dock')}
+                onMouseUp={cancelLongPress}
+                onMouseLeave={cancelLongPress}
+                onTouchStart={() => startLongPress('dock')}
+                onTouchEnd={cancelLongPress}
+              >
+                UPDATE DOCK PARAMS
+              </button>
+              
+              <h3 className="text-xl font-bold text-white mt-6">Navigation Parameters</h3>
+              <div className="grid grid-cols-2 gap-3">
+                <button 
+                  onClick={() => handleProfileChange('didilong')}
+                  className={`py-2 px-3 rounded text-white font-semibold ${navProfile === 'didilong' ? 'bg-[#d32f2f]' : 'bg-[#333]'}`}
+                >
+                  DIDILONG
+                </button>
+                <button 
+                  onClick={() => handleProfileChange('fast')}
+                  className={`py-2 px-3 rounded text-white font-semibold ${navProfile === 'fast' ? 'bg-[#d32f2f]' : 'bg-[#333]'}`}
+                >
+                  FAST
+                </button>
+                <button 
+                  onClick={() => handleProfileChange('slow')}
+                  className={`py-2 px-3 rounded text-white font-semibold ${navProfile === 'slow' ? 'bg-[#d32f2f]' : 'bg-[#333]'}`}
+                >
+                  SLOW
+                </button>
+                <button 
+                  onClick={() => handleProfileChange('linearBoost')}
+                  className={`py-2 px-3 rounded text-white font-semibold ${navProfile === 'linearBoost' ? 'bg-[#d32f2f]' : 'bg-[#333]'}`}
+                >
+                  LINEAR BOOST
+                </button>
+                <button 
+                  onClick={() => handleProfileChange('angularBoost')}
+                  className={`py-2 px-3 rounded text-white font-semibold ${navProfile === 'angularBoost' ? 'bg-[#d32f2f]' : 'bg-[#333]'}`}
+                >
+                  ANGULAR BOOST
+                </button>
+              </div>
+              
+              <div className="flex items-center justify-between mt-4">
+                <div className="text-[#e0e0e0] text-xl">Linear Velocity:</div>
+                <div className="text-white text-xl font-bold">{typeof navLinearVelocity === 'number' ? navLinearVelocity.toFixed(1) : navLinearVelocity} m/s</div>
+              </div>
+              
+              <div className="flex flex-col space-y-2">
+                <input
+                  type="range"
+                  min="0.1"
+                  max="1.6"
+                  step="0.1"
+                  value={navLinearVelocity}
+                  onChange={(e) => setNavLinearVelocity(parseFloat(e.target.value))}
+                  className="w-full h-3 bg-[#333] rounded-lg appearance-none cursor-pointer"
+                />
+                
+                <div className="flex justify-between text-[#999] text-sm">
+                  <span>0.1 m/s</span>
+                  <span>0.8 m/s</span>
+                  <span>1.6 m/s</span>
+                </div>
+              </div>
+              
+              <div className="flex items-center justify-between mt-4">
+                <div className="text-[#e0e0e0] text-xl">Angular Velocity:</div>
+                <div className="text-white text-xl font-bold">{typeof navAngularVelocity === 'number' ? navAngularVelocity.toFixed(1) : navAngularVelocity} rad/s</div>
+              </div>
+              
+              <div className="flex flex-col space-y-2">
+                <input
+                  type="range"
+                  min="1.0"
+                  max="15.0"
+                  step="0.5"
+                  value={navAngularVelocity}
+                  onChange={(e) => setNavAngularVelocity(parseFloat(e.target.value))}
+                  className="w-full h-3 bg-[#333] rounded-lg appearance-none cursor-pointer"
+                />
+                
+                <div className="flex justify-between text-[#999] text-sm">
+                  <span>1.0 rad/s</span>
+                  <span>8.0 rad/s</span>
+                  <span>15.0 rad/s</span>
+                </div>
+              </div>
+              
+              <button
+                className="text-white text-xl font-bold py-3 px-5 rounded-md w-full block text-center uppercase tracking-wider transition-all duration-300 mt-4 relative overflow-hidden"
+                style={{
+                  background: activeButton === 'nav' && buttonPressProgress > 0 
+                    ? `linear-gradient(to right, #4caf50 ${buttonPressProgress}%, #d32f2f ${buttonPressProgress}%)`
+                    : '#d32f2f'
+                }}
+                onMouseDown={() => startLongPress('nav')}
+                onMouseUp={cancelLongPress}
+                onMouseLeave={cancelLongPress}
+                onTouchStart={() => startLongPress('nav')}
+                onTouchEnd={cancelLongPress}
+              >
+                UPDATE NAV PARAMS
+              </button>
+              
+              <h3 className="text-xl font-bold text-white mt-6">SIMA Start Time Offset</h3>
+              <div className="flex items-center justify-between">
+                <div className="text-[#e0e0e0] text-xl">Start Offset:</div>
+                <div className="text-white text-xl font-bold">{simaStartOffset}</div>
+              </div>
+              
+              <div className="flex flex-col space-y-2">
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value={simaStartOffset}
+                  onChange={(e) => setSimaStartOffset(parseInt(e.target.value))}
+                  className="w-full h-3 bg-[#333] rounded-lg appearance-none cursor-pointer"
+                />
+                
+                <div className="flex justify-between text-[#999] text-sm">
+                  <span>0</span>
+                  <span>50</span>
+                  <span>100</span>
+                </div>
+              </div>
+              
+              <button
+                className="text-white text-xl font-bold py-3 px-5 rounded-md w-full block text-center uppercase tracking-wider transition-all duration-300 mt-4 relative overflow-hidden"
+                style={{
+                  background: activeButton === 'sima' && buttonPressProgress > 0 
+                    ? `linear-gradient(to right, #4caf50 ${buttonPressProgress}%, #d32f2f ${buttonPressProgress}%)`
+                    : '#d32f2f'
+                }}
+                onMouseDown={() => startLongPress('sima')}
+                onMouseUp={cancelLongPress}
+                onMouseLeave={cancelLongPress}
+                onTouchStart={() => startLongPress('sima')}
+                onTouchEnd={cancelLongPress}
+              >
+                UPDATE SIMA START OFFSET
+              </button>
+              
+              {/* After the SIMA section, add DEFAULT button at the bottom */}
+              <h3 className="text-xl font-bold text-white mt-8">Reset All Parameters</h3>
+              <button
+                className="text-white text-xl font-bold py-4 px-5 rounded-md w-full block text-center uppercase tracking-wider transition-all duration-300 mt-4 relative overflow-hidden"
+                style={{
+                  background: activeButton === 'reset' && buttonPressProgress > 0 
+                    ? `linear-gradient(to right, #4caf50 ${buttonPressProgress}%, #333 ${buttonPressProgress}%)`
+                    : '#333'
+                }}
+                onMouseDown={() => startLongPress('reset')}
+                onMouseUp={cancelLongPress}
+                onMouseLeave={cancelLongPress}
+                onTouchStart={() => startLongPress('reset')}
+                onTouchEnd={cancelLongPress}
+              >
+                RESET TO DEFAULTS
+              </button>
+              
               {updateStatus.visible && (
                 <div className={`text-center py-2 rounded-md text-lg ${updateStatus.isError ? 'bg-[#3a0909] text-[#ff6b6b]' : 'bg-[#0a2e0a] text-[#6bff6b]'}`}>
                   {updateStatus.message}
                 </div>
               )}
-              
-              <button
-                onClick={() => handleUpdateRivalRadius(rivalRadius)}
-                className="bg-[#d32f2f] text-white text-xl font-bold py-3 px-5 rounded-md w-full block text-center uppercase tracking-wider hover:bg-[#ff4d4d] transition-colors duration-300 mt-4"
-              >
-                UPDATE RADIUS
-              </button>
             </div>
           </StatusPanel>
         </div>
       </div>
 
+      {/* Long-press now replaces the confirmation dialog */}
+
       {/* Floating Bridge Status Indicator - Now a refresh button */}
       <div 
-        className={`fixed ${isHalfScreen ? 'bottom-40' : 'bottom-10'} right-10 z-50 flex items-center gap-8 bg-black/70 backdrop-blur-md rounded-2xl px-8 py-5 border-2 border-[#444] shadow-2xl transition-all duration-300 hover:bg-black/80 cursor-pointer select-none`}
+        className={`fixed ${isHalfScreen ? 'bottom-40' : 'bottom-10'} right-10 z-50 flex items-center gap-8 backdrop-blur-md rounded-2xl px-8 py-5 border-2 border-[#444] shadow-2xl transition-all duration-300 cursor-pointer select-none`}
+        style={{
+          background: pressProgress > 0 
+            ? `linear-gradient(to right, rgba(76, 175, 80, 0.8) ${pressProgress}%, rgba(0, 0, 0, 0.7) ${pressProgress}%)`
+            : 'rgba(0, 0, 0, 0.7)'
+        }}
         onMouseDown={() => {
           // Start long-press timer
           const timer = setInterval(() => {
@@ -753,10 +1320,7 @@ export default function RobotDashboard() {
           </div>
         </div>
         
-        {/* Long-press progress indicator */}
-        {pressProgress > 0 && (
-          <div className="absolute bottom-0 left-0 h-1 bg-[#ff4d4d] rounded-b-xl" style={{ width: `${pressProgress}%` }}></div>
-        )}
+        {/* Long-press progress is now shown with background gradient */}
       </div>
 
       {/* Add extra bottom space to prevent content from being hidden behind fixed elements */}
