@@ -709,9 +709,9 @@ router.get('/button-states', (req, res) => {
     // Check if file exists
     if (!fs.existsSync(buttonStatesPath)) {
       console.log('Button states file does not exist, returning default states');
-      // Return default (all false) button states if file doesn't exist
+      // Return default (all false) button states and empty sequence if file doesn't exist
       const defaultStates = Object.fromEntries([...Array(20).keys()].map(num => [num, false]));
-      return res.json({ success: true, states: defaultStates });
+      return res.json({ success: true, states: defaultStates, sequence: [] });
     }
 
     // Read and parse the JSON file
@@ -720,7 +720,11 @@ router.get('/button-states', (req, res) => {
     const data = JSON.parse(fileContent);
     console.log('Button states loaded:', data);
 
-    res.json({ success: true, states: data });
+    res.json({ 
+      success: true, 
+      states: data.states || data, // For backward compatibility
+      sequence: data.sequence || [] 
+    });
   } catch (error) {
     console.error('Error reading button states:', error);
     res.status(500).json({ 
@@ -735,7 +739,7 @@ router.get('/button-states', (req, res) => {
 router.post('/button-states', (req, res) => {
   try {
     console.log('Update button states API called with:', req.body);
-    const { states } = req.body;
+    const { states, sequence } = req.body;
 
     if (!states || typeof states !== 'object') {
       console.error('Invalid button states provided:', states);
@@ -753,14 +757,17 @@ router.post('/button-states', (req, res) => {
       fs.mkdirSync(dir, { recursive: true });
     }
 
-    // Write the button states to the file
-    console.log('Writing button states to file:', buttonStatesPath);
-    fs.writeFileSync(buttonStatesPath, JSON.stringify(states, null, 2));
-    console.log('Button states updated successfully');
+    // Write both states and sequence to the file
+    console.log('Writing button states and sequence to file:', buttonStatesPath);
+    fs.writeFileSync(buttonStatesPath, JSON.stringify({ 
+      states, 
+      sequence: sequence || [] 
+    }, null, 2));
+    console.log('Button states and sequence updated successfully');
 
     res.json({ 
       success: true, 
-      message: 'Button states updated successfully'
+      message: 'Button states and sequence updated successfully'
     });
   } catch (error) {
     console.error('Error updating button states:', error);
