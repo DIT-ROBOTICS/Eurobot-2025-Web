@@ -25,7 +25,7 @@ const DEFAULT_PLANS: PlanSequence[] = [
 ];
 
 export default function Playmat() {
-  const [estimatedScore, setEstimatedScore] = useState(320);
+  const [estimatedScore, setEstimatedScore] = useState(128);
   const [isHalfScreen, setIsHalfScreen] = useState(false);
   const { connected, getTopicHandler } = useRosConnection();
   // For storing button states
@@ -87,33 +87,64 @@ export default function Playmat() {
     fetchButtonStates();
   }, []);
 
-  // Subscribe to score topic from ROS
+  // Subscribe to score topics from ROS
   useEffect(() => {
     if (!connected || typeof window === 'undefined' || !window.ROSLIB) {
       return;
     }
 
-    // Create topic for score updates
+    let scoreReceived = false;
+    let lastScoreTime = 0;
+    const TIMEOUT_MS = 1000; // 1 second timeout to consider a topic as disconnected
+
+    // Create topics for score updates
     const scoreTopic = getTopicHandler('/score', 'std_msgs/msg/Int32');
+    const idealScoreTopic = getTopicHandler('/robot/startup/ideal_score', 'std_msgs/msg/Int32');
     
+    // Function to check if primary topic is alive
+    const isPrimaryTopicAlive = () => {
+      return Date.now() - lastScoreTime < TIMEOUT_MS;
+    };
+
+    // Timer to check connection status
+    const connectionTimer = setInterval(() => {
+      if (!isPrimaryTopicAlive()) {
+        scoreReceived = false;
+      }
+    }, 500);
+
     if (scoreTopic) {
-      // Subscribe to the score topic
+      // Subscribe to the primary score topic
       scoreTopic.subscribe((message: any) => {
         const score = parseInt(message.data);
         if (!isNaN(score)) {
+          scoreReceived = true;
+          lastScoreTime = Date.now();
           setEstimatedScore(score);
         }
       });
-      
-      // Clean up subscription
-      return () => {
-        try {
-          scoreTopic.unsubscribe();
-        } catch (e) {
-          console.error("Error unsubscribing from score topic:", e);
-        }
-      };
     }
+
+    if (idealScoreTopic) {
+      // Subscribe to the fallback score topic
+      idealScoreTopic.subscribe((message: any) => {
+        const score = parseInt(message.data);
+        if (!isNaN(score) && !scoreReceived) {
+          setEstimatedScore(score);
+        }
+      });
+    }
+    
+    // Clean up subscriptions and timer
+    return () => {
+      try {
+        if (scoreTopic) scoreTopic.unsubscribe();
+        if (idealScoreTopic) idealScoreTopic.unsubscribe();
+        clearInterval(connectionTimer);
+      } catch (e) {
+        console.error("Error unsubscribing from score topics:", e);
+      }
+    };
   }, [connected, getTopicHandler]);
 
   // Function to toggle button state
