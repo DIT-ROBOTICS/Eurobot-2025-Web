@@ -496,16 +496,122 @@ export default function RobotDashboard() {
     }
   };
   
-  // Start long press timer for button
+  // Function to update all parameters at once
+  const handleUpdateAllParams = async () => {
+    if (buttonPressProgress === 100 && activeButton === 'update') {
+      setButtonPressProgress(0);
+      setActiveButton(null);
+      
+      setUpdateStatus({ message: 'Updating all parameters...', isError: false, visible: true });
+      
+      try {
+        // Create an array of promises for all parameter updates
+        const updatePromises = [];
+        
+        // Update rival radius
+        const rivalRadiusM = rivalRadius / 100;
+        updatePromises.push(
+          fetch('/api/rival-radius', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ radius: rivalRadiusM }),
+          })
+        );
+        
+        // Update dock rival parameters
+        const dockRadiusM = dockRivalRadius / 100;
+        updatePromises.push(
+          fetch('/api/dock-rival-params', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ 
+              radius: dockRadiusM, 
+              degree: dockRivalDegree 
+            }),
+          })
+        );
+        
+        // Update navigation parameters
+        updatePromises.push(
+          fetch('/api/nav-params', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ 
+              profile: navProfile,
+              linearVelocity: navLinearVelocity, 
+              angularVelocity: navAngularVelocity 
+            }),
+          })
+        );
+        
+        // Update SIMA start offset
+        updatePromises.push(
+          fetch('/api/sima-start-offset', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ offset: simaStartOffset }),
+          })
+        );
+        
+        // Wait for all updates to complete
+        const results = await Promise.all(updatePromises);
+        
+        // Check if all updates were successful
+        const allSuccessful = results.every(response => response.ok);
+        
+        if (allSuccessful) {
+          setUpdateStatus({ 
+            message: 'All parameters updated successfully!', 
+            isError: false, 
+            visible: true 
+          });
+        } else {
+          throw new Error('Some parameters failed to update');
+        }
+        
+        // Hide success message after 3 seconds
+        setTimeout(() => {
+          setUpdateStatus((prev: any) => ({ ...prev, visible: false }));
+        }, 3000);
+        
+      } catch (error) {
+        console.error("Error updating parameters:", error);
+        setUpdateStatus({ 
+          message: error instanceof Error ? error.message : 'Error updating parameters',
+          isError: true, 
+          visible: true 
+        });
+        
+        // Hide error message after 3 seconds
+        setTimeout(() => {
+          setUpdateStatus((prev: any) => ({ ...prev, visible: false }));
+        }, 3000);
+      }
+    }
+  };
+  
+  // Update the startLongPress function to handle the new unified update
   const startLongPress = (buttonType: string) => {
     setActiveButton(buttonType);
     
     const timer = setInterval(() => {
       setButtonPressProgress((prev: number) => {
-        const newProgress = prev + (100/20); // Complete in 2 seconds (20×100ms)
+        const newProgress = prev + (100/10); // Complete in 1 second (10×100ms)
         if (newProgress >= 100) {
           clearInterval(timer);
-          // Will trigger the appropriate update function on release
+          if (buttonType === 'update') {
+            handleUpdateAllParams();
+          } else if (buttonType === 'reset') {
+            resetToDefaults();
+          }
           return 100;
         }
         return newProgress;
@@ -971,9 +1077,9 @@ export default function RobotDashboard() {
           {/* Rival Robot Parameters Panel */}
           <StatusPanel title="Robot Parameters">
             <div className="flex flex-col space-y-4">
-              <h3 className="text-xl font-bold text-white">NAV Rival Radius</h3>
+              <h3 className="text-xl font-bold text-white">Rival Parameters</h3>
               <div className="flex items-center justify-between">
-                <div className="text-[#e0e0e0] text-xl">Rival Robot Radius:</div>
+                <div className="text-[#e0e0e0] text-xl mt-4">Rival Robot Radius:</div>
                 <div className="text-white text-xl font-bold">{rivalRadius} cm</div>
               </div>
               
@@ -995,23 +1101,6 @@ export default function RobotDashboard() {
                 </div>
               </div>
               
-              <button
-                className="text-white text-xl font-bold py-3 px-5 rounded-md w-full block text-center uppercase tracking-wider transition-all duration-300 mt-4 relative overflow-hidden"
-                style={{
-                  background: activeButton === 'rival' && buttonPressProgress > 0 
-                    ? `linear-gradient(to right, #4caf50 ${buttonPressProgress}%, #d32f2f ${buttonPressProgress}%)`
-                    : '#d32f2f'
-                }}
-                onMouseDown={() => startLongPress('rival')}
-                onMouseUp={cancelLongPress}
-                onMouseLeave={cancelLongPress}
-                onTouchStart={() => startLongPress('rival')}
-                onTouchEnd={cancelLongPress}
-              >
-                UPDATE RADIUS
-              </button>
-              
-              <h3 className="text-xl font-bold text-white mt-6">Dock Rival Parameters</h3>
               <div className="flex items-center justify-between">
                 <div className="text-[#e0e0e0] text-xl">Dock Rival Radius:</div>
                 <div className="text-white text-xl font-bold">{dockRivalRadius} cm</div>
@@ -1035,7 +1124,7 @@ export default function RobotDashboard() {
                 </div>
               </div>
               
-              <div className="flex items-center justify-between mt-4">
+              <div className="flex items-center justify-between">
                 <div className="text-[#e0e0e0] text-xl">Dock Rival Degree:</div>
                 <div className="text-white text-xl font-bold">{dockRivalDegree}°</div>
               </div>
@@ -1057,22 +1146,6 @@ export default function RobotDashboard() {
                   <span>360°</span>
                 </div>
               </div>
-              
-              <button
-                className="text-white text-xl font-bold py-3 px-5 rounded-md w-full block text-center uppercase tracking-wider transition-all duration-300 mt-4 relative overflow-hidden"
-                style={{
-                  background: activeButton === 'dock' && buttonPressProgress > 0 
-                    ? `linear-gradient(to right, #4caf50 ${buttonPressProgress}%, #d32f2f ${buttonPressProgress}%)`
-                    : '#d32f2f'
-                }}
-                onMouseDown={() => startLongPress('dock')}
-                onMouseUp={cancelLongPress}
-                onMouseLeave={cancelLongPress}
-                onTouchStart={() => startLongPress('dock')}
-                onTouchEnd={cancelLongPress}
-              >
-                UPDATE DOCK PARAMS
-              </button>
               
               <h3 className="text-xl font-bold text-white mt-6">Navigation Parameters</h3>
               <div className="grid grid-cols-2 gap-3">
@@ -1154,22 +1227,6 @@ export default function RobotDashboard() {
                 </div>
               </div>
               
-              <button
-                className="text-white text-xl font-bold py-3 px-5 rounded-md w-full block text-center uppercase tracking-wider transition-all duration-300 mt-4 relative overflow-hidden"
-                style={{
-                  background: activeButton === 'nav' && buttonPressProgress > 0 
-                    ? `linear-gradient(to right, #4caf50 ${buttonPressProgress}%, #d32f2f ${buttonPressProgress}%)`
-                    : '#d32f2f'
-                }}
-                onMouseDown={() => startLongPress('nav')}
-                onMouseUp={cancelLongPress}
-                onMouseLeave={cancelLongPress}
-                onTouchStart={() => startLongPress('nav')}
-                onTouchEnd={cancelLongPress}
-              >
-                UPDATE NAV PARAMS
-              </button>
-              
               <h3 className="text-xl font-bold text-white mt-6">SIMA Start Time Offset</h3>
               <div className="flex items-center justify-between">
                 <div className="text-[#e0e0e0] text-xl">Start Offset:</div>
@@ -1195,25 +1252,24 @@ export default function RobotDashboard() {
               </div>
               
               <button
-                className="text-white text-xl font-bold py-3 px-5 rounded-md w-full block text-center uppercase tracking-wider transition-all duration-300 mt-4 relative overflow-hidden"
+                className="text-white text-xl font-bold py-4 px-5 rounded-md w-full block text-center uppercase tracking-wider transition-all duration-300 mt-8 relative overflow-hidden"
                 style={{
-                  background: activeButton === 'sima' && buttonPressProgress > 0 
+                  background: activeButton === 'update' && buttonPressProgress > 0 
                     ? `linear-gradient(to right, #4caf50 ${buttonPressProgress}%, #d32f2f ${buttonPressProgress}%)`
                     : '#d32f2f'
                 }}
-                onMouseDown={() => startLongPress('sima')}
+                onMouseDown={() => startLongPress('update')}
                 onMouseUp={cancelLongPress}
                 onMouseLeave={cancelLongPress}
-                onTouchStart={() => startLongPress('sima')}
+                onTouchStart={() => startLongPress('update')}
                 onTouchEnd={cancelLongPress}
               >
-                UPDATE SIMA START OFFSET
+                UPDATE ALL PARAMETERS
               </button>
               
-              {/* After the SIMA section, add DEFAULT button at the bottom */}
-              <h3 className="text-xl font-bold text-white mt-8">Reset All Parameters</h3>
+              {/* After the update button, add DEFAULT button */}
               <button
-                className="text-white text-xl font-bold py-4 px-5 rounded-md w-full block text-center uppercase tracking-wider transition-all duration-300 mt-4 relative overflow-hidden"
+                className="text-white text-xl font-bold py-4 px-5 rounded-md w-full block text-center uppercase tracking-wider transition-all duration-300 mt-2 relative overflow-hidden"
                 style={{
                   background: activeButton === 'reset' && buttonPressProgress > 0 
                     ? `linear-gradient(to right, #4caf50 ${buttonPressProgress}%, #333 ${buttonPressProgress}%)`
@@ -1252,7 +1308,7 @@ export default function RobotDashboard() {
           // Start long-press timer
           const timer = setInterval(() => {
             setPressProgress(prev => {
-              const newProgress = prev + (100/30); // Complete in 3 seconds (30×100ms)
+              const newProgress = prev + (100/10); // Complete in 1 second (10×100ms)
               if (newProgress >= 100) {
                 // Reload the page
                 window.location.reload();
@@ -1284,7 +1340,7 @@ export default function RobotDashboard() {
           // Start long-press timer (touch screen)
           const timer = setInterval(() => {
             setPressProgress(prev => {
-              const newProgress = prev + (100/30); // Complete in 3 seconds
+              const newProgress = prev + (100/10); // Complete in 1 second
               if (newProgress >= 100) {
                 // Reload the page
                 window.location.reload();
