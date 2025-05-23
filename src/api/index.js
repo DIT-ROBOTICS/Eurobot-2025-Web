@@ -606,98 +606,76 @@ router.post('/nav-params', (req, res) => {
   }
 });
 
-// GET endpoint to retrieve SIMA start offset
-router.get('/sima-start-offset', (req, res) => {
+// GET endpoint to retrieve SIMA parameters
+router.get('/sima-params', (req, res) => {
   try {
-    // Default offset
-    let offset = 85;
+    const simaJSONPath = path.join(dataDir, 'sima.json');
+    
+    // Default values
+    let params = {
+      sima_start_time: 85,
+      plan_code: 1
+    };
     
     // Check if file exists
     if (!fs.existsSync(simaJSONPath)) {
       // Create default file
-      const defaultData = { sima_start_time: offset };
+      fs.writeFileSync(simaJSONPath, JSON.stringify(params, null, 2));
+      console.log('Created default sima.json:', params);
       
-      // Ensure the directory exists
-      const dir = path.dirname(simaJSONPath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      
-      fs.writeFileSync(simaJSONPath, JSON.stringify(defaultData, null, 2));
-      console.log('Created default sima.json with start_time:', offset);
-      
-      return res.json({ success: true, offset });
+      return res.json({ success: true, ...params });
     }
 
     // Read and parse the JSON file
     try {
       const fileContent = fs.readFileSync(simaJSONPath, 'utf8');
       const data = JSON.parse(fileContent);
-
-      // Extract offset value
-      if (data && typeof data.sima_start_time === 'number') {
-        offset = data.sima_start_time;
+      
+      if (data) {
+        params.sima_start_time = data.sima_start_time || params.sima_start_time;
+        params.plan_code = data.plan_code || params.plan_code;
       }
-    } catch (parseError) {
-      console.error('Error parsing SIMA JSON:', parseError);
-      // Use default value on error
+      
+      return res.json({ success: true, ...params });
+    } catch (error) {
+      console.error('Error parsing sima.json:', error);
+      return res.json({ success: true, ...params });
     }
-
-    res.json({ success: true, offset });
   } catch (error) {
-    console.error('Error reading SIMA start offset:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Error reading SIMA configuration',
-      error: error.message,
-      offset: 85 // Default on error
-    });
+    console.error('Error reading sima.json:', error);
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// POST endpoint to update SIMA start offset
-router.post('/sima-start-offset', (req, res) => {
+// POST endpoint to update SIMA parameters
+router.post('/sima-params', (req, res) => {
   try {
-    const { offset } = req.body;
-    console.log('Update SIMA start offset API called with:', req.body);
-
-    if (offset === undefined || isNaN(offset)) {
+    const { sima_start_time, plan_code } = req.body;
+    const simaJSONPath = path.join(dataDir, 'sima.json');
+    
+    console.log('Update SIMA parameters API called with:', {
+      sima_start_time,
+      plan_code,
+    });
+    
+    // Validate parameters
+    if (sima_start_time === undefined || plan_code === undefined) {
       return res.status(400).json({ 
         success: false, 
-        message: 'Invalid offset value'
+        message: 'Missing required parameters' 
       });
     }
 
-    // Ensure the offset is within reasonable bounds (0 to 100)
-    const validOffset = Math.max(0, Math.min(100, parseInt(offset)));
-    console.log('Validated SIMA start offset:', validOffset);
+    // Create or update the file
+    fs.writeFileSync(simaJSONPath, JSON.stringify({
+      sima_start_time,
+      plan_code
+    }, null, 2));
 
-    // Create data structure
-    const data = { sima_start_time: validOffset };
-
-    // Ensure the directory exists
-    const dir = path.dirname(simaJSONPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-
-    // Write the updated configuration back to the file
-    console.log('Writing SIMA JSON content:', data);
-    fs.writeFileSync(simaJSONPath, JSON.stringify(data, null, 2));
-    console.log('SIMA JSON file updated successfully');
-
-    res.json({ 
-      success: true, 
-      message: 'SIMA start offset updated successfully', 
-      offset: validOffset 
-    });
+    res.json({ success: true });
   } catch (error) {
-    console.error('Error updating SIMA start offset:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Error updating SIMA configuration',
-      error: error.message
-    });
+    console.error('Error updating SIMA parameters:', error);
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
@@ -837,7 +815,7 @@ router.post('/reset-to-defaults', (req, res) => {
     
     // 3. Reset SIMA start time
     fs.writeFileSync(simaJSONPath, JSON.stringify({
-      start_time_offset: DEFAULT_VALUES.sima_start_time
+      sima_start_time: DEFAULT_VALUES.sima_start_time
     }, null, 2));
     
     // Format values for response to ensure consistent decimal places

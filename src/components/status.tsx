@@ -1,6 +1,19 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import Status3DModel from "./Status3DModel";
 import { useRosConnection } from "../utils/useRosConnection";
+
+// Add type definitions
+interface SimaStatus {
+  id: string;
+  connected: boolean;
+  url: string;
+}
+
+interface UpdateStatus {
+  message: string;
+  isError: boolean;
+  visible: boolean;
+}
 
 export default function RobotDashboard() {
   const [batteryVoltage, setBatteryVoltage] = useState(20.25);
@@ -40,17 +53,14 @@ export default function RobotDashboard() {
     imu: false
   });
   const [rivalRadius, setRivalRadius] = useState(22); // Default rival radius in cm
-  const [updateStatus, setUpdateStatus] = useState<{ 
-    message: string; 
-    isError: boolean; 
-    visible: boolean 
-  }>({ message: '', isError: false, visible: false });
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ message: '', isError: false, visible: false });
   const [dockRivalRadius, setDockRivalRadius] = useState(46); // Default dock rival radius in cm
   const [dockRivalDegree, setDockRivalDegree] = useState(120); // Default dock rival degree
   const [navLinearVelocity, setNavLinearVelocity] = useState(1.1); // Default linear velocity
   const [navAngularVelocity, setNavAngularVelocity] = useState(2.0); // Default angular velocity
   const [navProfile, setNavProfile] = useState("slow"); // Default navigation profile
-  const [simaStartOffset, setSimaStartOffset] = useState(85); // Default SIMA start time offset
+  const [simaStartTime, setSimaStartTime] = useState(85); // Default SIMA start time
+  const [planCode, setPlanCode] = useState(1); // Add new state for SIMA plan code
   const [showConfirmDialog, setShowConfirmDialog] = useState(false); // For confirmation dialog
   const [paramsToUpdate, setParamsToUpdate] = useState<string | null>(null); // Which parameters to update
   const [buttonPressTimer, setButtonPressTimer] = useState<any>(null);
@@ -327,7 +337,7 @@ export default function RobotDashboard() {
     const checkAllSimas = async () => {
       try {
         // Create an array of promises for all SIMA checks
-        const checkPromises = simaStatuses.map((sima) => 
+        const checkPromises = simaStatuses.map((sima: SimaStatus) => 
           checkSimaConnectivity(sima.url)
             .then(isConnected => ({ ...sima, connected: isConnected }))
         );
@@ -437,7 +447,7 @@ export default function RobotDashboard() {
         const data = await response.json();
         
         if (data.success && data.offset !== undefined) {
-          setSimaStartOffset(data.offset);
+          setSimaStartTime(data.offset);
         }
       } catch (error) {
         console.error("Error fetching SIMA start offset:", error);
@@ -448,55 +458,181 @@ export default function RobotDashboard() {
     fetchSimaStartOffset();
   }, []);
 
-  // Function to update rival radius
-  const handleUpdateRivalRadius = async (newRadius: number) => {
+  // Fetch SIMA parameters
+  useEffect(() => {
+    const fetchSimaParams = async () => {
+      try {
+        const response = await fetch('/api/sima-params');
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        if (data.success) {
+          if (data.sima_start_time !== undefined) setSimaStartTime(data.sima_start_time);
+          if (data.plan_code !== undefined) setPlanCode(data.plan_code);
+        }
+      } catch (error) {
+        console.error("Error fetching SIMA parameters:", error);
+      }
+    };
+    
+    fetchSimaParams();
+  }, []);
+
+  // Function to update SIMA parameters
+  const handleUpdateSimaParams = async () => {
     try {
-      // Format to ensure consistent decimal places
-      // Convert from cm to meters for API
-      const radiusInMeters = (newRadius / 100).toFixed(2);
-      
-      const response = await fetch('/api/rival-radius', {
+      const response = await fetch('/api/sima-params', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ radius: radiusInMeters }),
+        body: JSON.stringify({
+          sima_start_time: simaStartTime,
+          plan_code: planCode
+        }),
       });
-      
-      // ... rest of the function ...
+
+      if (!response.ok) {
+        throw new Error(`HTTP error ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      if (data.success) {
+        setUpdateStatus({ message: 'SIMA parameters updated successfully', isError: false, visible: true });
+        setTimeout(() => setUpdateStatus((prev) => ({ ...prev, visible: false })), 3000);
+      } else {
+        throw new Error(data.message || 'Update failed');
+      }
     } catch (error) {
-      // ... error handling ...
+      console.error('Error updating SIMA parameters:', error);
+      setUpdateStatus({ message: `Error: ${error.message}`, isError: true, visible: true });
+      setTimeout(() => setUpdateStatus((prev) => ({ ...prev, visible: false })), 3000);
     }
   };
-  
-  // Function to update dock rival parameters
+
+  // Function to handle long press updates
+  const handleLongPressUpdate = async () => {
+    if (activeButton === 'rival') handleUpdateRivalRadius(rivalRadius);
+    else if (activeButton === 'dock') handleUpdateDockRivalParams();
+    else if (activeButton === 'nav') handleUpdateNavParams();
+    else if (activeButton === 'sima') handleUpdateSimaParams();
+    else if (activeButton === 'reset') resetToDefaults();
+  };
+
+  // Remove duplicate updateParameters function
+  const handleUpdateRivalRadius = async (newRadius: number) => {
+    await updateParameters('rival');
+  };
+
   const handleUpdateDockRivalParams = async () => {
-    if (buttonPressProgress === 100 && activeButton === 'dock') {
-      setButtonPressProgress(0);
-      setActiveButton(null);
-      await updateParameters('dock');
-    }
+    await updateParameters('dock');
   };
-  
-  // Function to update navigation parameters
+
   const handleUpdateNavParams = async () => {
-    if (buttonPressProgress === 100 && activeButton === 'nav') {
-      setButtonPressProgress(0);
-      setActiveButton(null);
-      await updateParameters('nav');
+    await updateParameters('nav');
+  };
+
+  // Consolidated update parameters function
+  const updateParameters = async (paramType: string) => {
+    setUpdateStatus({ message: 'Updating...', isError: false, visible: true });
+    
+    try {
+      let response;
+      
+      switch (paramType) {
+        case 'rival': {
+          const radiusM = rivalRadius / 100;
+          console.log(`Sending radius update request: ${radiusM}m`);
+          
+          response = await fetch('/api/rival-radius', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ radius: radiusM }),
+          });
+          break;
+        }
+        case 'dock': {
+          const radiusM = dockRivalRadius / 100;
+          console.log(`Sending dock rival params update: radius=${radiusM}m, degree=${dockRivalDegree}`);
+          
+          response = await fetch('/api/dock-rival-params', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ 
+              radius: radiusM,
+              degree: dockRivalDegree 
+            }),
+          });
+          break;
+        }
+        case 'nav': {
+          console.log(`Sending navigation params update: profile=${navProfile}, linear=${navLinearVelocity}, angular=${navAngularVelocity}`);
+          
+          response = await fetch('/api/nav-params', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ 
+              profile: navProfile,
+              linearVelocity: navLinearVelocity,
+              angularVelocity: navAngularVelocity
+            }),
+          });
+          break;
+        }
+        case 'sima': {
+          console.log(`Sending SIMA params update: offset=${simaStartTime}, planCode=${planCode}`);
+          
+          response = await fetch('/api/sima-params', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ 
+              sima_start_time: simaStartTime,
+              plan_code: planCode
+            }),
+          });
+          break;
+        }
+        default:
+          throw new Error(`Unknown parameter type: ${paramType}`);
+      }
+
+      if (!response.ok) {
+        throw new Error(`HTTP error ${response.status}`);
+      }
+
+      const data = await response.json();
+      
+      if (data.success) {
+        setUpdateStatus({ message: `${paramType} parameters updated successfully`, isError: false, visible: true });
+        setTimeout(() => setUpdateStatus((prev: UpdateStatus) => ({ ...prev, visible: false })), 3000);
+      } else {
+        throw new Error(data.message || 'Update failed');
+      }
+    } catch (error: unknown) {
+      console.error(`Error updating ${paramType} parameters:`, error);
+      setUpdateStatus({ 
+        message: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`, 
+        isError: true, 
+        visible: true 
+      });
+      setTimeout(() => setUpdateStatus((prev: UpdateStatus) => ({ ...prev, visible: false })), 3000);
     }
   };
-  
-  // Function to update SIMA start offset
-  const handleUpdateSimaStartOffset = async () => {
-    if (buttonPressProgress === 100 && activeButton === 'sima') {
-      setButtonPressProgress(0);
-      setActiveButton(null);
-      await updateParameters('sima');
-    }
-  };
-  
-  // Function to update all parameters at once
+
+  // Update the handleUpdateAllParams function
   const handleUpdateAllParams = async () => {
     if (buttonPressProgress === 100 && activeButton === 'update') {
       setButtonPressProgress(0);
@@ -550,14 +686,17 @@ export default function RobotDashboard() {
           })
         );
         
-        // Update SIMA start offset
+        // Update SIMA parameters
         updatePromises.push(
-          fetch('/api/sima-start-offset', {
+          fetch('/api/sima-params', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ offset: simaStartOffset }),
+            body: JSON.stringify({ 
+              sima_start_time: simaStartTime,
+              plan_code: planCode
+            }),
           })
         );
         
@@ -629,129 +768,10 @@ export default function RobotDashboard() {
       
       // If we reached 100%, trigger the appropriate update function
       if (buttonPressProgress === 100) {
-        if (activeButton === 'rival') handleUpdateRivalRadius(rivalRadius);
-        else if (activeButton === 'dock') handleUpdateDockRivalParams();
-        else if (activeButton === 'nav') handleUpdateNavParams();
-        else if (activeButton === 'sima') handleUpdateSimaStartOffset();
-        else if (activeButton === 'reset') resetToDefaults();
+        handleLongPressUpdate();
       }
       
       setButtonPressProgress(0);
-    }
-  };
-  
-  // Function to execute update based on parameter type
-  const updateParameters = async (paramType: string) => {
-    setUpdateStatus({ message: 'Updating...', isError: false, visible: true });
-    
-    try {
-      let response;
-      
-      if (paramType === 'rival') {
-        // Convert from cm to m for storage
-        const radiusM = rivalRadius / 100;
-        console.log(`Sending radius update request: ${radiusM}m`);
-        
-        // Direct file update via API
-        response = await fetch('/api/rival-radius', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ radius: radiusM }),
-        });
-      } 
-      else if (paramType === 'dock') {
-        const radiusM = dockRivalRadius / 100;
-        console.log(`Sending dock rival params update: radius=${radiusM}m, degree=${dockRivalDegree}`);
-        
-        response = await fetch('/api/dock-rival-params', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ 
-            radius: radiusM, 
-            degree: dockRivalDegree 
-          }),
-        });
-      }
-      else if (paramType === 'nav') {
-        console.log(`Sending navigation params update: profile=${navProfile}, linear=${navLinearVelocity}, angular=${navAngularVelocity}`);
-        
-        response = await fetch('/api/nav-params', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ 
-            profile: navProfile,
-            linearVelocity: navLinearVelocity, 
-            angularVelocity: navAngularVelocity 
-          }),
-        });
-      }
-      else if (paramType === 'sima') {
-        console.log(`Sending SIMA start offset update: ${simaStartOffset}`);
-        
-        response = await fetch('/api/sima-start-offset', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ offset: simaStartOffset }),
-        });
-      }
-      
-      // Check if the response is OK
-      if (!response || !response.ok) {
-        // Try to parse error response
-        let errorMessage = 'Failed to update parameters';
-        try {
-          if (response) {
-            const errorData = await response.json();
-            errorMessage = errorData.message || errorMessage;
-          }
-        } catch (parseError) {
-          errorMessage = response ? `Network error (${response.status}): ${response.statusText}` : 'Network error';
-          console.error('Failed to parse error response:', parseError);
-        }
-        throw new Error(errorMessage);
-      }
-      
-      // Parse success response
-      const jsonResponse = await response.json();
-      console.log('Update response:', jsonResponse);
-      
-      // Set success message
-      let successMessage = 'Parameters updated successfully!';
-      if (paramType === 'rival' && jsonResponse.radius) {
-        successMessage = `Rival radius updated to ${Math.round(jsonResponse.radius * 100)}cm!`;
-      }
-      
-      setUpdateStatus({ 
-        message: successMessage, 
-        isError: false, 
-        visible: true 
-      });
-      
-      // Hide the status message after 3 seconds
-      setTimeout(() => {
-        setUpdateStatus((prev: any) => ({ ...prev, visible: false }));
-      }, 3000);
-      
-    } catch (error) {
-      console.error("Error updating parameters:", error);
-      setUpdateStatus({ 
-        message: error instanceof Error ? error.message : 'Error updating parameters', 
-        isError: true, 
-        visible: true 
-      });
-      
-      // Hide error message after 3 seconds
-      setTimeout(() => {
-        setUpdateStatus((prev: any) => ({ ...prev, visible: false }));
-      }, 3000);
     }
   };
   
@@ -769,7 +789,6 @@ export default function RobotDashboard() {
       setUpdateStatus({ message: 'Resetting to defaults...', isError: false, visible: true });
       
       try {
-        // Use direct API server URL to bypass Vite in case of proxy issues
         const response = await fetch('/api/reset-to-defaults', {
           method: 'POST',
           headers: {
@@ -786,7 +805,6 @@ export default function RobotDashboard() {
         console.log('Reset API response:', data);
         
         if (data.success) {
-          // Update all state values with defaults from the response
           if (data.defaults) {
             // Update rival radius (convert from meters to cm)
             if (data.defaults.nav_rival_radius) {
@@ -807,9 +825,12 @@ export default function RobotDashboard() {
               setDockRivalDegree(data.defaults.dock_rival_degree);
             }
             
-            // Update SIMA offset
-            if (data.defaults.sima_start_time) {
-              setSimaStartOffset(data.defaults.sima_start_time);
+            // Update SIMA parameters
+            if (data.defaults.sima_start_time !== undefined) {
+              setSimaStartTime(data.defaults.sima_start_time);
+            }
+            if (data.defaults.plan_code !== undefined) {
+              setPlanCode(data.defaults.plan_code);
             }
             
             // We don't update navigation parameters here because they're profile-specific
@@ -867,7 +888,7 @@ export default function RobotDashboard() {
       console.error("Error fetching navigation parameters:", error);
     }
   };
-  
+
   return (
     <div className="h-full w-full bg-[#0e0e0e] p-6 overflow-y-auto">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -1227,10 +1248,10 @@ export default function RobotDashboard() {
                 </div>
               </div>
               
-              <h3 className="text-xl font-bold text-white mt-6">SIMA Start Time Offset</h3>
+              <h3 className="text-xl font-bold text-white mt-6">SIMA Parameters</h3>
               <div className="flex items-center justify-between">
-                <div className="text-[#e0e0e0] text-xl">Start Offset:</div>
-                <div className="text-white text-xl font-bold">{simaStartOffset}</div>
+                <div className="text-[#e0e0e0] text-xl">Start Time:</div>
+                <div className="text-white text-xl font-bold">{simaStartTime}</div>
               </div>
               
               <div className="flex flex-col space-y-2">
@@ -1239,8 +1260,8 @@ export default function RobotDashboard() {
                   min="0"
                   max="100"
                   step="1"
-                  value={simaStartOffset}
-                  onChange={(e) => setSimaStartOffset(parseInt(e.target.value))}
+                  value={simaStartTime}
+                  onChange={(e) => setSimaStartTime(parseInt(e.target.value))}
                   className="w-full h-3 bg-[#333] rounded-lg appearance-none cursor-pointer"
                 />
                 
@@ -1248,6 +1269,28 @@ export default function RobotDashboard() {
                   <span>0</span>
                   <span>50</span>
                   <span>100</span>
+                </div>
+              </div>
+
+              {/* Add SIMA Plan Code Controls */}
+              <div className="flex items-center justify-between mt-4">
+                <div className="text-[#e0e0e0] text-xl">Plan Code:</div>
+                <div className="flex items-center space-x-4">
+                  <button 
+                    onClick={() => setPlanCode(prev => Math.max(1, prev - 1))}
+                    className="bg-[#333] text-white w-10 h-10 rounded-md flex items-center justify-center hover:bg-[#444] transition-colors"
+                  >
+                    <span className="text-2xl">-</span>
+                  </button>
+                  <div className="text-white text-xl font-bold min-w-[40px] text-center">
+                    {planCode}
+                  </div>
+                  <button 
+                    onClick={() => setPlanCode(prev => Math.min(10, prev + 1))}
+                    className="bg-[#333] text-white w-10 h-10 rounded-md flex items-center justify-center hover:bg-[#444] transition-colors"
+                  >
+                    <span className="text-2xl">+</span>
+                  </button>
                 </div>
               </div>
               
