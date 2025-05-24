@@ -90,7 +90,8 @@ function initializeDefaultFiles() {
   // Create default JSON files
   const defaultJsonFiles = {
     'sima.json': {
-      sima_start_time: 85
+      sima_start_time: 85,
+      plan_code: 1,
     }
   };
   

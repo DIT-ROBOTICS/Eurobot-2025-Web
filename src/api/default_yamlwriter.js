@@ -83,7 +83,8 @@ function createNavParamsYaml() {
 function createSimaJson() {
   const filePath = path.join(dataDir, 'sima.json');
   const data = {
-    sima_start_time: 85
+    sima_start_time: 85,
+    plan_code: 1,
   };
   
   if (!fs.existsSync(filePath)) {

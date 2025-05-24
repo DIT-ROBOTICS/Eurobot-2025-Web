@@ -15,6 +15,17 @@ interface UpdateStatus {
   visible: boolean;
 }
 
+// Define system group order and types
+const systemGroupOrder = ['MAIN', 'CAMERA', 'NAVIGATION', 'LOCALIZATION'] as const;
+type SystemGroupName = typeof systemGroupOrder[number];
+
+interface SystemGroupStatusState {
+  MAIN: number | null;
+  CAMERA: number | null;
+  NAVIGATION: number | null;
+  LOCALIZATION: number | null;
+}
+
 export default function RobotDashboard() {
   const [batteryVoltage, setBatteryVoltage] = useState(20.25);
   const [filteredVoltage, setFilteredVoltage] = useState(20.25); // Filtered voltage value
@@ -66,6 +77,15 @@ export default function RobotDashboard() {
   const [buttonPressTimer, setButtonPressTimer] = useState<any>(null);
   const [buttonPressProgress, setButtonPressProgress] = useState(0);
   const [activeButton, setActiveButton] = useState<string | null>(null);
+
+  // State for system group status
+  const [systemGroupStatus, setSystemGroupStatus] = useState<SystemGroupStatusState>({
+    MAIN: null,
+    CAMERA: null,
+    NAVIGATION: null,
+    LOCALIZATION: null,
+  });
+  const [lastGroupsStateUpdateTime, setLastGroupsStateUpdateTime] = useState(0);
 
   // Define the type for device status
   type DeviceStatusType = typeof deviceStatus;
@@ -163,6 +183,26 @@ export default function RobotDashboard() {
       });
       }
 
+    // Subscribe to system group status topic
+    const groupsStateTopic = getTopicHandler('/robot/startup/groups_state', 'std_msgs/msg/Int32MultiArray');
+    if (groupsStateTopic) {
+      groupsStateTopic.subscribe((message: any) => { // message should be { data: number[] }
+        if (message.data && Array.isArray(message.data)) {
+          const newStatusUpdate: Partial<SystemGroupStatusState> = {};
+          systemGroupOrder.forEach((name, index) => {
+            if (message.data.length > index) {
+              newStatusUpdate[name] = message.data[index];
+            } else {
+              // If data array is shorter than expected, mark missing as null
+              newStatusUpdate[name] = null;
+            }
+          });
+          setSystemGroupStatus((prevStatus: SystemGroupStatusState) => ({ ...prevStatus, ...newStatusUpdate }));
+          setLastGroupsStateUpdateTime(Date.now()); // Update timestamp
+        }
+      });
+    }
+
     // Cleanup function
     return () => {
       if (batteryTopic) {
@@ -190,6 +230,15 @@ export default function RobotDashboard() {
           plugTopic.unsubscribe();
         } catch (e) {
           console.error("Error unsubscribing from plug topic:", e);
+        }
+      }
+
+      // Unsubscribe from groups state topic
+      if (groupsStateTopic) {
+        try {
+          groupsStateTopic.unsubscribe();
+        } catch (e) {
+          console.error("Error unsubscribing from groups state topic:", e);
         }
       }
     };
@@ -434,51 +483,21 @@ export default function RobotDashboard() {
     fetchNavParams();
   }, [navProfile]);
   
-  // Fetch SIMA start offset
-  useEffect(() => {
-    const fetchSimaStartOffset = async () => {
-      try {
-        const response = await fetch('/api/sima-start-offset');
-        
-        if (!response.ok) {
-          throw new Error(`HTTP error ${response.status}`);
-        }
-        
-        const data = await response.json();
-        
-        if (data.success && data.offset !== undefined) {
-          setSimaStartTime(data.offset);
-        }
-      } catch (error) {
-        console.error("Error fetching SIMA start offset:", error);
-        // Keep using default value on error
-      }
-    };
-    
-    fetchSimaStartOffset();
-  }, []);
-
-  // Fetch SIMA parameters
+  // Fetch SIMA parameters (this one is correct, keep it)
   useEffect(() => {
     const fetchSimaParams = async () => {
       try {
         const response = await fetch('/api/sima-params');
-        
-        if (!response.ok) {
-          throw new Error(`HTTP error ${response.status}`);
-        }
-        
+        if (!response.ok) throw new Error(`HTTP error ${response.status}`);
         const data = await response.json();
-        
         if (data.success) {
           if (data.sima_start_time !== undefined) setSimaStartTime(data.sima_start_time);
           if (data.plan_code !== undefined) setPlanCode(data.plan_code);
         }
-      } catch (error) {
+      } catch (error: any) { // Add type for error
         console.error("Error fetching SIMA parameters:", error);
       }
     };
-    
     fetchSimaParams();
   }, []);
 
@@ -504,17 +523,17 @@ export default function RobotDashboard() {
 
       if (data.success) {
         setUpdateStatus({ message: 'SIMA parameters updated successfully', isError: false, visible: true });
-        setTimeout(() => setUpdateStatus((prev) => ({ ...prev, visible: false })), 3000);
+        setTimeout(() => setUpdateStatus((prev: UpdateStatus) => ({ ...prev, visible: false })), 3000); // Add type for prev
       } else {
         throw new Error(data.message || 'Update failed');
       }
-    } catch (error) {
+    } catch (error: any) { // Add type for error
       console.error('Error updating SIMA parameters:', error);
       setUpdateStatus({ message: `Error: ${error.message}`, isError: true, visible: true });
-      setTimeout(() => setUpdateStatus((prev) => ({ ...prev, visible: false })), 3000);
+      setTimeout(() => setUpdateStatus((prev: UpdateStatus) => ({ ...prev, visible: false })), 3000); // Add type for prev
     }
   };
-
+  
   // Function to handle long press updates
   const handleLongPressUpdate = async () => {
     if (activeButton === 'rival') handleUpdateRivalRadius(rivalRadius);
@@ -530,13 +549,13 @@ export default function RobotDashboard() {
   };
 
   const handleUpdateDockRivalParams = async () => {
-    await updateParameters('dock');
+      await updateParameters('dock');
   };
-
+  
   const handleUpdateNavParams = async () => {
-    await updateParameters('nav');
+      await updateParameters('nav');
   };
-
+  
   // Consolidated update parameters function
   const updateParameters = async (paramType: string) => {
     setUpdateStatus({ message: 'Updating...', isError: false, visible: true });
@@ -617,146 +636,70 @@ export default function RobotDashboard() {
       
       if (data.success) {
         setUpdateStatus({ message: `${paramType} parameters updated successfully`, isError: false, visible: true });
-        setTimeout(() => setUpdateStatus((prev: UpdateStatus) => ({ ...prev, visible: false })), 3000);
+        setTimeout(() => setUpdateStatus((prev: UpdateStatus) => ({ ...prev, visible: false })), 3000); // Add type for prev
       } else {
         throw new Error(data.message || 'Update failed');
       }
-    } catch (error: unknown) {
+    } catch (error: any) { // Add type for error
       console.error(`Error updating ${paramType} parameters:`, error);
       setUpdateStatus({ 
         message: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`, 
         isError: true, 
         visible: true 
       });
-      setTimeout(() => setUpdateStatus((prev: UpdateStatus) => ({ ...prev, visible: false })), 3000);
+      setTimeout(() => setUpdateStatus((prev: UpdateStatus) => ({ ...prev, visible: false })), 3000); // Add type for prev
     }
   };
 
   // Update the handleUpdateAllParams function
   const handleUpdateAllParams = async () => {
-    if (buttonPressProgress === 100 && activeButton === 'update') {
-      setButtonPressProgress(0);
-      setActiveButton(null);
-      
-      setUpdateStatus({ message: 'Updating all parameters...', isError: false, visible: true });
-      
-      try {
-        // Create an array of promises for all parameter updates
-        const updatePromises = [];
-        
-        // Update rival radius
-        const rivalRadiusM = rivalRadius / 100;
-        updatePromises.push(
-          fetch('/api/rival-radius', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ radius: rivalRadiusM }),
-          })
-        );
-        
-        // Update dock rival parameters
-        const dockRadiusM = dockRivalRadius / 100;
-        updatePromises.push(
-          fetch('/api/dock-rival-params', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ 
-              radius: dockRadiusM, 
-              degree: dockRivalDegree 
-            }),
-          })
-        );
-        
-        // Update navigation parameters
-        updatePromises.push(
-          fetch('/api/nav-params', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ 
-              profile: navProfile,
-              linearVelocity: navLinearVelocity, 
-              angularVelocity: navAngularVelocity 
-            }),
-          })
-        );
-        
-        // Update SIMA parameters
-        updatePromises.push(
-          fetch('/api/sima-params', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ 
-              sima_start_time: simaStartTime,
-              plan_code: planCode
-            }),
-          })
-        );
-        
-        // Wait for all updates to complete
-        const results = await Promise.all(updatePromises);
-        
-        // Check if all updates were successful
-        const allSuccessful = results.every(response => response.ok);
-        
-        if (allSuccessful) {
-          setUpdateStatus({ 
-            message: 'All parameters updated successfully!', 
-            isError: false, 
-            visible: true 
-          });
-        } else {
-          throw new Error('Some parameters failed to update');
-        }
-        
-        // Hide success message after 3 seconds
-        setTimeout(() => {
-          setUpdateStatus((prev: any) => ({ ...prev, visible: false }));
-        }, 3000);
-        
-      } catch (error) {
-        console.error("Error updating parameters:", error);
-        setUpdateStatus({ 
-          message: error instanceof Error ? error.message : 'Error updating parameters',
-          isError: true, 
-          visible: true 
-        });
-        
-        // Hide error message after 3 seconds
-        setTimeout(() => {
-          setUpdateStatus((prev: any) => ({ ...prev, visible: false }));
-        }, 3000);
+    setUpdateStatus({ message: 'Updating all parameters...', isError: false, visible: true });
+    try {
+      const updatePromises = [];
+      // Rival Radius
+      updatePromises.push(fetch('/api/rival-radius', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ radius: rivalRadius / 100 }) }));
+      // Dock Rival Params
+      updatePromises.push(fetch('/api/dock-rival-params', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ radius: dockRivalRadius / 100, degree: dockRivalDegree }) }));
+      // Nav Params
+      updatePromises.push(fetch('/api/nav-params', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profile: navProfile, linearVelocity: navLinearVelocity, angularVelocity: navAngularVelocity }) }));
+      // SIMA Params - use correct names
+      updatePromises.push(fetch('/api/sima-params', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sima_start_time: simaStartTime, plan_code: planCode }) }));
+
+      const results = await Promise.all(updatePromises);
+      const allSuccessful = results.every(response => response.ok);
+      if (allSuccessful) {
+        setUpdateStatus({ message: 'All parameters updated successfully!', isError: false, visible: true });
+      } else {
+        throw new Error('Some parameters failed to update');
       }
+    } catch (error: any) { // Add type for error
+      console.error("Error updating all parameters:", error);
+      setUpdateStatus({ message: `Error: ${error.message}`, isError: true, visible: true });
     }
+    setTimeout(() => setUpdateStatus((prev: UpdateStatus) => ({ ...prev, visible: false })), 3000); // Add type for prev
   };
   
   // Update the startLongPress function to handle the new unified update
   const startLongPress = (buttonType: string) => {
     setActiveButton(buttonType);
-    
     const timer = setInterval(() => {
-      setButtonPressProgress((prev: number) => {
-        const newProgress = prev + (100/10); // Complete in 1 second (10×100ms)
+      setButtonPressProgress((prev: number) => { // Add type for prev
+        const newProgress = prev + (100 / 10); // Complete in 1 second (10x100ms)
         if (newProgress >= 100) {
           clearInterval(timer);
           if (buttonType === 'update') {
-            handleUpdateAllParams();
+            handleUpdateAllParams(); // This should send all params
           } else if (buttonType === 'reset') {
             resetToDefaults();
+          } else {
+            // For individual parameter updates (rival, dock, nav, sima)
+            updateParameters(buttonType); 
           }
           return 100;
         }
         return newProgress;
       });
     }, 100);
-    
     setButtonPressTimer(timer);
   };
   
@@ -765,13 +708,10 @@ export default function RobotDashboard() {
     if (buttonPressTimer) {
       clearInterval(buttonPressTimer);
       setButtonPressTimer(null);
-      
-      // If we reached 100%, trigger the appropriate update function
-      if (buttonPressProgress === 100) {
-        handleLongPressUpdate();
-      }
-      
-      setButtonPressProgress(0);
+      // No need to call update functions here if startLongPress already does upon 100%
+      // The logic in startLongPress handles the action if progress reached 100
+      setButtonPressProgress(0); // Reset progress regardless
+      // setActiveButton(null); // Consider resetting activeButton here too
     }
   };
   
@@ -782,91 +722,37 @@ export default function RobotDashboard() {
 
   // Function to reset all parameters to defaults
   const resetToDefaults = async () => {
-    if (buttonPressProgress === 100 && activeButton === 'reset') {
-      setButtonPressProgress(0);
-      setActiveButton(null);
-      
-      setUpdateStatus({ message: 'Resetting to defaults...', isError: false, visible: true });
-      
-      try {
-        const response = await fetch('/api/reset-to-defaults', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          }
-        });
+    // The call from startLongPress ensures conditions (activeButton === 'reset' and progress was 100) are met.
+    // We still need to reset button progress and active button here.
+    setButtonPressProgress(0); // Reset progress as the action is now initiated
+    setActiveButton(null);    // Clear the active button
+
+    setUpdateStatus({ message: 'Resetting to defaults...', isError: false, visible: true });
+    try {
+      const response = await fetch('/api/reset-to-defaults', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      if (!response.ok) throw new Error(`Failed to reset parameters: ${response.statusText}`);
+      const data = await response.json();
+      if (data.success && data.defaults) {
+        const defaults = data.defaults;
+        if (defaults.nav_rival_radius) setRivalRadius(Math.round(parseFloat(defaults.nav_rival_radius) * 100));
+        if (defaults.dock_rival_radius) setDockRivalRadius(Math.round(parseFloat(defaults.dock_rival_radius) * 100));
+        if (defaults.dock_rival_degree) setDockRivalDegree(defaults.dock_rival_degree);
+        if (defaults.sima_start_time !== undefined) setSimaStartTime(defaults.sima_start_time);
+        if (defaults.plan_code !== undefined) setPlanCode(defaults.plan_code); // Changed from sima_plan_code to plan_code
         
-        if (!response.ok) {
-          console.error(`Reset API failed with status: ${response.status} ${response.statusText}`);
-          throw new Error(`Failed to reset parameters: ${response.statusText}`);
-        }
-        
-        const data = await response.json();
-        console.log('Reset API response:', data);
-        
-        if (data.success) {
-          if (data.defaults) {
-            // Update rival radius (convert from meters to cm)
-            if (data.defaults.nav_rival_radius) {
-              const radiusValue = typeof data.defaults.nav_rival_radius === 'string' 
-                ? parseFloat(data.defaults.nav_rival_radius) 
-                : data.defaults.nav_rival_radius;
-              setRivalRadius(Math.round(radiusValue * 100));
-            }
-            
-            // Update dock parameters
-            if (data.defaults.dock_rival_radius) {
-              const dockRadiusValue = typeof data.defaults.dock_rival_radius === 'string'
-                ? parseFloat(data.defaults.dock_rival_radius)
-                : data.defaults.dock_rival_radius;
-              setDockRivalRadius(Math.round(dockRadiusValue * 100));
-            }
-            if (data.defaults.dock_rival_degree) {
-              setDockRivalDegree(data.defaults.dock_rival_degree);
-            }
-            
-            // Update SIMA parameters
-            if (data.defaults.sima_start_time !== undefined) {
-              setSimaStartTime(data.defaults.sima_start_time);
-            }
-            if (data.defaults.plan_code !== undefined) {
-              setPlanCode(data.defaults.plan_code);
-            }
-            
-            // We don't update navigation parameters here because they're profile-specific
-            // and will be fetched when needed via the useEffect for navProfile
-          }
-          
-          setUpdateStatus({ 
-            message: 'All parameters reset to defaults!', 
-            isError: false, 
-            visible: true 
-          });
-          
-          // Reload navigation parameters for current profile
-          fetchNavParams(navProfile);
-        } else {
-          throw new Error(data.message || 'Failed to reset parameters');
-        }
-        
-        // Hide the status message after 3 seconds
-        setTimeout(() => {
-          setUpdateStatus((prev: any) => ({ ...prev, visible: false }));
-        }, 3000);
-      } catch (error) {
-        console.error("Error resetting parameters:", error);
-        setUpdateStatus({ 
-          message: error instanceof Error ? error.message : 'Error resetting parameters',
-          isError: true, 
-          visible: true 
-        });
-        
-        // Hide error message after 3 seconds
-        setTimeout(() => {
-          setUpdateStatus((prev: any) => ({ ...prev, visible: false }));
-        }, 3000);
+        setUpdateStatus({ message: 'All parameters reset to defaults!', isError: false, visible: true });
+        fetchNavParams(navProfile); // Reload nav params for current profile
+      } else {
+        throw new Error(data.message || 'Failed to reset parameters or parse defaults');
       }
+    } catch (error: any) { 
+      console.error("Error resetting parameters:", error);
+      setUpdateStatus({ message: `Error: ${error.message}`, isError: true, visible: true });
     }
+    setTimeout(() => setUpdateStatus((prev: UpdateStatus) => ({ ...prev, visible: false })), 3000); 
   };
   
   // Helper function to fetch navigation parameters for a specific profile
@@ -888,6 +774,38 @@ export default function RobotDashboard() {
       console.error("Error fetching navigation parameters:", error);
     }
   };
+  
+  // Helper function to determine system group color
+  const getSystemGroupColor = (value: number | null): string => {
+    if (value === null) return "red"; // No message or error
+    if (value === 0) return "yellow";
+    if (value === 3) return "green";
+    return "red"; // Default for other unexpected values
+  };
+
+  // Add a timeout effect to reset systemGroupStatus if no message received
+  useEffect(() => {
+    if (!rosConnected) return; // Don't run if not connected
+
+    const intervalId = setInterval(() => {
+      const now = Date.now();
+      const timeSinceLastUpdate = now - lastGroupsStateUpdateTime;
+
+      // If it's been more than 5 seconds since the last update, reset statuses
+      if (lastGroupsStateUpdateTime !== 0 && timeSinceLastUpdate > 5000) {
+        setSystemGroupStatus({
+          MAIN: null,
+          CAMERA: null,
+          NAVIGATION: null,
+          LOCALIZATION: null,
+        });
+        setLastGroupsStateUpdateTime(0); // Reset time to prevent immediate re-trigger
+      }
+    }, 1000); // Check every second
+
+    // Clean up interval on unmount or when dependencies change
+    return () => clearInterval(intervalId);
+  }, [rosConnected, lastGroupsStateUpdateTime]); // Removed systemGroupStatus from deps
 
   return (
     <div className="h-full w-full bg-[#0e0e0e] p-6 overflow-y-auto">
@@ -895,10 +813,13 @@ export default function RobotDashboard() {
         <div className="space-y-6">
           {/* Status Indicators */}
           <StatusPanel title="System Status">
-            <StatusItem color="green" label="MAIN" />
-            <StatusItem color="yellow" label="CAMERA" />
-            <StatusItem color="green" label="NAVIGATION" />
-            <StatusItem color="red" label="LOCALIZATION" />
+            {systemGroupOrder.map(name => (
+              <StatusItem
+                key={name}
+                color={getSystemGroupColor(systemGroupStatus[name])}
+                label={name}
+              />
+            ))}
           </StatusPanel>
 
           {/* Checkboxes */}
@@ -1286,7 +1207,7 @@ export default function RobotDashboard() {
                     {planCode}
                   </div>
                   <button 
-                    onClick={() => setPlanCode(prev => Math.min(10, prev + 1))}
+                    onClick={() => setPlanCode(prev => Math.min(50, prev + 1))} // Changed 10 to 50
                     className="bg-[#333] text-white w-10 h-10 rounded-md flex items-center justify-center hover:bg-[#444] transition-colors"
                   >
                     <span className="text-2xl">+</span>
@@ -1350,7 +1271,7 @@ export default function RobotDashboard() {
         onMouseDown={() => {
           // Start long-press timer
           const timer = setInterval(() => {
-            setPressProgress(prev => {
+            setPressProgress((prev: number) => { // Add type for prev
               const newProgress = prev + (100/10); // Complete in 1 second (10×100ms)
               if (newProgress >= 100) {
                 // Reload the page
@@ -1382,7 +1303,7 @@ export default function RobotDashboard() {
         onTouchStart={() => {
           // Start long-press timer (touch screen)
           const timer = setInterval(() => {
-            setPressProgress(prev => {
+            setPressProgress((prev: number) => { // Add type for prev
               const newProgress = prev + (100/10); // Complete in 1 second
               if (newProgress >= 100) {
                 // Reload the page
@@ -1708,7 +1629,7 @@ export default function RobotDashboard() {
   );
 }
 
-function StatusPanel({ title, children }: { title: string; children: React.ReactNode }) {
+function StatusPanel({ title, children }: { title: string; children?: React.ReactNode }) { // Made children optional
   return (
     <div className="bg-[#181818] p-6 rounded-lg shadow-md mb-6 w-full min-w-[300px]">
       {title && <h3 className="text-4xl font-bold text-[#ff4d4d] mb-6 uppercase">{title}</h3>}
@@ -1717,8 +1638,8 @@ function StatusPanel({ title, children }: { title: string; children: React.React
   );
 }
 
-function StatusItem({ color, label }: { color: string; label: string }) {
-  const colorMap = {
+function StatusItem({ color, label, key }: { color: string; label: string; key?: string }) { // Added key as an optional prop
+  const colorMap: { [key: string]: string } = { // Added index signature to colorMap
     green: "bg-[#4caf50]",
     yellow: "bg-[#ffb74d]",
     red: "bg-[#f44336]",

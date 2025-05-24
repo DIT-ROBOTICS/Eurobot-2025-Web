@@ -49,7 +49,8 @@ const DEFAULT_VALUES = {
     linearBoost: { linear: 1.1, angular: 2.0 },
     angularBoost: { linear: 0.5, angular: 12.0 }
   },
-  sima_start_time: 85
+  sima_start_time: 85,
+  sima_plan_code: 1
 };
 
 console.log('Rival params path:', rivalParamsPath);
@@ -630,14 +631,14 @@ router.get('/sima-params', (req, res) => {
     try {
       const fileContent = fs.readFileSync(simaJSONPath, 'utf8');
       const data = JSON.parse(fileContent);
-      
+
       if (data) {
         params.sima_start_time = data.sima_start_time || params.sima_start_time;
         params.plan_code = data.plan_code || params.plan_code;
       }
       
       return res.json({ success: true, ...params });
-    } catch (error) {
+  } catch (error) {
       console.error('Error parsing sima.json:', error);
       return res.json({ success: true, ...params });
     }
@@ -657,7 +658,7 @@ router.post('/sima-params', (req, res) => {
       sima_start_time,
       plan_code,
     });
-    
+
     // Validate parameters
     if (sima_start_time === undefined || plan_code === undefined) {
       return res.status(400).json({ 
@@ -813,25 +814,30 @@ router.post('/reset-to-defaults', (req, res) => {
       console.log(`Reset ${profile} navigation profile`);
     }
     
-    // 3. Reset SIMA start time
+    // 3. Reset SIMA parameters
     fs.writeFileSync(simaJSONPath, JSON.stringify({
-      sima_start_time: DEFAULT_VALUES.sima_start_time
+      sima_start_time: DEFAULT_VALUES.sima_start_time,
+      plan_code: DEFAULT_VALUES.sima_plan_code
     }, null, 2));
+    console.log('Reset sima.json with sima_start_time and plan_code');
     
     // Format values for response to ensure consistent decimal places
     const responseData = {
       success: true,
       message: 'All parameters reset to defaults',
-      nav_rival_radius: formatFloatForJSON(DEFAULT_VALUES.nav_rival_radius),
-      dock_rival_radius: formatFloatForJSON(DEFAULT_VALUES.dock_rival_radius),
-      dock_rival_degree: DEFAULT_VALUES.dock_rival_degree,
-      nav_profiles: {},
-      sima_start_time: DEFAULT_VALUES.sima_start_time
+      defaults: {
+        nav_rival_radius: formatFloatForJSON(DEFAULT_VALUES.nav_rival_radius),
+        dock_rival_radius: formatFloatForJSON(DEFAULT_VALUES.dock_rival_radius),
+        dock_rival_degree: DEFAULT_VALUES.dock_rival_degree,
+        nav_profiles: {},
+        sima_start_time: DEFAULT_VALUES.sima_start_time,
+        plan_code: DEFAULT_VALUES.sima_plan_code
+      }
     };
     
-    // Format navigation profiles
+    // Format navigation profiles for response
     for (const profile in DEFAULT_VALUES.nav_profiles) {
-      responseData.nav_profiles[profile] = {
+      responseData.defaults.nav_profiles[profile] = {
         linear: formatFloatForJSON(DEFAULT_VALUES.nav_profiles[profile].linear),
         angular: formatFloatForJSON(DEFAULT_VALUES.nav_profiles[profile].angular)
       };
