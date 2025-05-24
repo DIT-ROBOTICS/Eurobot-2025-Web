@@ -56,73 +56,56 @@ export async function updateRivalRadius(radiusCm: number): Promise<{ success: bo
 }
 
 /**
- * Get the button states from the server
- * @returns Object with button states (key: button number, value: boolean)
+ * Get the button states and sequence from the server
+ * @returns Object with button states (key: button number, value: boolean) and sequence (number[])
  */
-export async function getButtonStates(): Promise<Record<number, boolean>> {
+export async function getButtonStatesAndSequence(): Promise<{ states: Record<number, boolean>, sequence: number[] }> {
   try {
-    console.log('Fetching button states from server');
     const response = await fetch('/api/button-states');
-    
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
-    
     const data = await response.json();
-    console.log('Button states received:', data);
-    
-    if (data.success && data.states) {
-      return data.states;
+    if (data.success && data.states && Array.isArray(data.sequence)) {
+      return { states: data.states, sequence: data.sequence };
     } else {
       throw new Error('Invalid response format from server');
     }
   } catch (error) {
-    console.error('Error fetching button states:', error);
-    // Return default states (all false) in case of error
-    return Object.fromEntries([...Array(20).keys()].map(num => [num, false]));
-  }
-}
-
-/**
- * Update the button states on the server
- * @param states Object with button states (key: button number, value: boolean)
- * @returns Success status and message
- */
-export async function updateButtonStates(states: Record<number, boolean>): Promise<{ success: boolean; message: string }> {
-  try {
-    console.log('Sending button states to server:', states);
-    const response = await fetch('/api/button-states', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ states }),
-    });
-    
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-    
-    const result = await response.json();
-    console.log('Server response:', result);
-    return result;
-  } catch (error) {
-    console.error('Error updating button states:', error);
-    return { 
-      success: false, 
-      message: error instanceof Error ? error.message : 'Unknown error occurred'
+    console.error('Error fetching button states and sequence:', error);
+    // Return default states (all false) and empty sequence in case of error
+    return {
+      states: Object.fromEntries([...Array(20).keys()].map(num => [num, false])),
+      sequence: []
     };
   }
 }
 
 /**
- * Reset all button states to false
+ * Update the button states and sequence on the server
+ * @param states Object with button states (key: button number, value: boolean)
+ * @param sequence Array of button press order
  * @returns Success status and message
  */
-export async function resetButtonStates(): Promise<{ success: boolean; message: string }> {
-  // Create an object with all button states set to false
-  const resetStates = Object.fromEntries([...Array(20).keys()].map(num => [num, false]));
-  
-  // Update the button states on the server
-  return await updateButtonStates(resetStates);
+export async function updateButtonStatesAndSequence(states: Record<number, boolean>, sequence: number[]): Promise<{ success: boolean; message: string }> {
+  try {
+    const response = await fetch('/api/button-states', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ states, sequence }),
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    const result = await response.json();
+    return result;
+  } catch (error) {
+    console.error('Error updating button states and sequence:', error);
+    return {
+      success: false,
+      message: error instanceof Error ? error.message : 'Unknown error occurred'
+    };
+  }
 } 
