@@ -1,5 +1,7 @@
 # Eurobot 2025 Robot Web UI
 
+![](docs/images/image_00.png)
+
 A comprehensive real-time web interface for monitoring and controlling Eurobot 2025 robots. This modern React-based dashboard provides intuitive visualization tools, real-time system monitoring, strategy planning, and robot control capabilities through ROS2 integration. The web-based architecture ensures universal compatibility across robot displays, iPads, laptops, and desktop computers, enabling flexible deployment and enhanced human-machine interaction during development and competition.
 
 ## Project Overview
@@ -201,7 +203,6 @@ Configuration files are stored in `/home/share/data/`:
 
 ## Screenshots
 
-![](docs/images/image_00.png)
 ![](docs/images/image_01.png)
 ![](docs/images/image_02.png)
 ![](docs/images/image_03.png)
