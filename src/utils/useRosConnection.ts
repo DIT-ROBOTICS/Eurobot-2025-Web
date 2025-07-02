@@ -152,8 +152,36 @@ export function useRosConnection() {
     });
   };
 
+  // Helper function to create a service instance
+  const getServiceHandler = (serviceName: string, serviceType: string) => {
+    if (!connectionState.ros || !connectionState.connected) {
+      return null;
+    }
+
+    return new (window as any).ROSLIB.Service({
+      ros: connectionState.ros,
+      name: serviceName,
+      serviceType: serviceType
+    });
+  };
+
+  // Helper function to create a service server instance
+  const getServiceServer = (serviceName: string, serviceType: string) => {
+    if (!connectionState.ros || !connectionState.connected) {
+      return null;
+    }
+
+    return new (window as any).ROSLIB.Service({
+      ros: connectionState.ros,
+      name: serviceName,
+      serviceType: serviceType
+    });
+  };
+
   return {
     ...connectionState,
-    getTopicHandler
+    getTopicHandler,
+    getServiceHandler,
+    getServiceServer
   };
 } 

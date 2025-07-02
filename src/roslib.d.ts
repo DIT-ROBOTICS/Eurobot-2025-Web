@@ -9,6 +9,24 @@ interface ROSLIBTopic {
   ros: ROSLIB.Ros;
   subscribe(callback: (message: ROSLIBMessage) => void): void;
   unsubscribe(): void;
+  publish(message: ROSLIBMessage): void;
+}
+
+interface ROSLIBServiceRequest {
+  [key: string]: any;
+}
+
+interface ROSLIBServiceResponse {
+  success?: boolean;
+  message?: string;
+  [key: string]: any;
+}
+
+interface ROSLIBService {
+  name: string;
+  serviceType: string;
+  ros: ROSLIB.Ros;
+  callService(request: ROSLIBServiceRequest, callback: (response: ROSLIBServiceResponse) => void): void;
 }
 
 interface ROSLIBEvent {
@@ -27,6 +45,12 @@ declare namespace ROSLIB {
     constructor(options: { ros: ROSLIB.Ros; name: string; messageType: string });
     subscribe(callback: (message: ROSLIBMessage) => void): void;
     unsubscribe(): void;
+    publish(message: ROSLIBMessage): void;
+  }
+
+  class Service {
+    constructor(options: { ros: ROSLIB.Ros; name: string; serviceType: string });
+    callService(request: ROSLIBServiceRequest, callback: (response: ROSLIBServiceResponse) => void): void;
   }
 }
 

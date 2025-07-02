@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 
 // Remove inline type declaration
 // declare module '*.png' {
@@ -7,7 +7,6 @@ import React from 'react';
 // }
 
 import playmatImage from "../assets/playmat_2025_FINAL.png";
-import { useState, useEffect, useCallback } from "react";
 import { useRosConnection } from "../utils/useRosConnection";
 import { getButtonStatesAndSequence, updateButtonStatesAndSequence } from "../api/fileOperations";
 
@@ -27,7 +26,7 @@ const DEFAULT_PLANS: PlanSequence[] = [
 export default function Playmat() {
   const [estimatedScore, setEstimatedScore] = useState(128);
   const [isHalfScreen, setIsHalfScreen] = useState(false);
-  const { connected, getTopicHandler } = useRosConnection();
+  const { connected, getTopicHandler, getServiceServer } = useRosConnection();
   // For storing button states
   const [toggleStates, setToggleStates] = useState<Record<number, boolean>>(
     Object.fromEntries([...Array(20).keys()].map(num => [num, false]))
@@ -38,11 +37,28 @@ export default function Playmat() {
   const [pressTimer, setPressTimer] = useState<any>(null);
   const [pressProgress, setPressProgress] = useState(0);
   
-  // 新增狀態
+  // Plan management states
   const [currentSequence, setCurrentSequence] = useState<number[]>([]);
   const [plans, setPlans] = useState<PlanSequence[]>(DEFAULT_PLANS);
   const [selectedPlanId, setSelectedPlanId] = useState<number | null>(null);
+  
+  // UI interaction states  
   const [isConfirming, setIsConfirming] = useState(false);
+  const [isSuccess, setIsSuccess] = useState(false);
+  
+  // Service server states managed via refs
+  
+  // Use ref to store the latest selectedPlanId for service callback access
+  const selectedPlanIdRef = useRef<number | null>(null);
+  
+  // Use ref to store ROS connection and service server to prevent recreation
+  const rosConnectionRef = useRef<any>(null);
+  const serviceServerRef = useRef<any>(null);
+  
+  // Sync selectedPlanId to ref
+  useEffect(() => {
+    selectedPlanIdRef.current = selectedPlanId;
+  }, [selectedPlanId]);
   
   // Detect half-screen mode
   useEffect(() => {
@@ -287,43 +303,95 @@ export default function Playmat() {
     });
   };
 
-  // Send plan to ROS
+  // Setup service server with stable connection
   useEffect(() => {
-    if (!connected) return;
-
-    const planTopic = getTopicHandler('/robot/startup/web_plan', 'std_msgs/msg/Int32');
-    if (planTopic) {
-      // Default send 0
-      const defaultInterval = setInterval(() => {
-        if (!isConfirming) {
-          planTopic.publish({ data: 0 });
+    if (!connected || typeof window === 'undefined' || !window.ROSLIB) {
+      // Clean up existing service server if connection is lost
+      if (serviceServerRef.current) {
+        try {
+          console.log('Cleaning up service server due to connection loss...');
+          serviceServerRef.current.unadvertise();
+          serviceServerRef.current = null;
+        } catch (e) {
+          console.error('Error cleaning up service server:', e);
         }
-      }, 200); // 5Hz
-
-      // If confirming, keep sending plan ID
-      if (isConfirming && selectedPlanId) {
-        const confirmInterval = setInterval(() => {
-          planTopic.publish({ data: selectedPlanId });
-        }, 200); // 5Hz
-
-        return () => {
-          clearInterval(defaultInterval);
-          clearInterval(confirmInterval);
-          planTopic.publish({ data: 0 }); // Send 0 when clearing
-        };
       }
-
-      return () => {
-        clearInterval(defaultInterval);
-        planTopic.publish({ data: 0 }); // Send 0 when clearing
-      };
+      return;
     }
-  }, [connected, selectedPlanId, isConfirming, getTopicHandler]);
+
+    // Get service server instance
+    const server = getServiceServer('/robot/startup/web_plan', 'std_srvs/srv/Trigger');
+    if (!server) {
+      return;
+    }
+
+    // Check if we already have a service server with the same ROS connection
+    if (serviceServerRef.current && rosConnectionRef.current === server.ros) {
+      console.log('Service server already exists and connection is stable');
+      return;
+    }
+
+    // Clean up existing service server if ROS connection changed
+    if (serviceServerRef.current) {
+      try {
+        console.log('Cleaning up existing service server due to connection change...');
+        serviceServerRef.current.unadvertise();
+      } catch (e) {
+        console.error('Error cleaning up existing service server:', e);
+      }
+    }
+
+    try {
+      // Setup the service server
+
+      // Handle service requests
+      server.advertise((request: any, response: any) => {
+        console.log('Service request received:', request);
+        
+        // Get current selected plan ID from ref (always up-to-date)
+        const planId = selectedPlanIdRef.current || 0;
+        response.success = true;
+        response.message = planId.toString();
+        
+        console.log(`Service responding with plan ID: ${planId}`);
+        return true;
+      });
+
+      // Store references
+      serviceServerRef.current = server;
+      rosConnectionRef.current = server.ros;
+      console.log('Service server created successfully: /robot/startup/web_plan');
+
+    } catch (error) {
+      console.error('Error creating service server:', error);
+    }
+
+    return () => {
+      // Cleanup on unmount only
+      if (serviceServerRef.current) {
+        try {
+          console.log('Unmounting: Stopping service server...');
+          serviceServerRef.current.unadvertise();
+          serviceServerRef.current = null;
+          rosConnectionRef.current = null;
+        } catch (e) {
+          console.error('Error stopping service server during unmount:', e);
+        }
+      }
+    };
+  }, [connected]); // Only depend on connected state
 
   // Handle confirm button
   const handleConfirm = () => {
     if (selectedPlanId) {
       setIsConfirming(true);
+      setIsSuccess(true);
+      
+      // Show success state for 2 seconds, then reset
+      setTimeout(() => {
+        setIsSuccess(false);
+        setIsConfirming(false);
+      }, 2000);
     }
   };
 
@@ -332,15 +400,10 @@ export default function Playmat() {
     setCurrentSequence([]);
     setSelectedPlanId(null);
     setIsConfirming(false);
+    setIsSuccess(false);
     const resetStates = Object.fromEntries([...Array(20).keys()].map(num => [num, false]));
     setToggleStates(resetStates);
     updateButtonStatesAndSequence(resetStates, []);
-    if (connected) {
-      const planTopic = getTopicHandler('/robot/startup/web_plan', 'std_msgs/msg/Int32');
-      if (planTopic) {
-        planTopic.publish({ data: 0 });
-      }
-    }
   };
 
   // Get button visual state
@@ -737,19 +800,18 @@ export default function Playmat() {
                 className={`flex-1 px-6 py-3 rounded-xl font-medium transition-all ${
                   !selectedPlanId
                     ? 'bg-[#121212] text-[#666666] cursor-not-allowed border border-[#333333]'
-                    : isConfirming
-                    ? 'bg-[#121212] text-white border border-white cursor-wait'
+                    : isSuccess
+                    ? 'bg-green-600 text-white border border-green-600'
                     : 'bg-white text-black hover:bg-[#f0f0f0] shadow-lg shadow-white/20'
                 }`}
               >
                 <div className="flex items-center justify-center gap-2">
-                  {isConfirming ? (
+                  {isSuccess ? (
                     <>
-                      <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                       </svg>
-                      <span>Sending Plan {selectedPlanId}...</span>
+                      <span>Plan Confirmed</span>
                     </>
                   ) : (
                     <>
