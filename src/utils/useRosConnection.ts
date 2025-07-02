@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
 // Define the shape of our connection state
 interface RosConnectionState {
@@ -140,7 +140,7 @@ export function useRosConnection() {
   }, []);
 
   // Helper function to create a topic instance
-  const getTopicHandler = (topicName: string, messageType: string) => {
+  const getTopicHandler = useCallback((topicName: string, messageType: string) => {
     if (!connectionState.ros || !connectionState.connected) {
       return null;
     }
@@ -150,10 +150,10 @@ export function useRosConnection() {
       name: topicName,
       messageType: messageType
     });
-  };
+  }, [connectionState.ros, connectionState.connected]);
 
   // Helper function to create a service instance
-  const getServiceHandler = (serviceName: string, serviceType: string) => {
+  const getServiceHandler = useCallback((serviceName: string, serviceType: string) => {
     if (!connectionState.ros || !connectionState.connected) {
       return null;
     }
@@ -163,10 +163,10 @@ export function useRosConnection() {
       name: serviceName,
       serviceType: serviceType
     });
-  };
+  }, [connectionState.ros, connectionState.connected]);
 
   // Helper function to create a service server instance
-  const getServiceServer = (serviceName: string, serviceType: string) => {
+  const getServiceServer = useCallback((serviceName: string, serviceType: string) => {
     if (!connectionState.ros || !connectionState.connected) {
       return null;
     }
@@ -176,7 +176,7 @@ export function useRosConnection() {
       name: serviceName,
       serviceType: serviceType
     });
-  };
+  }, [connectionState.ros, connectionState.connected]);
 
   return {
     ...connectionState,
